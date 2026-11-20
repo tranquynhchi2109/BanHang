@@ -41,6 +41,10 @@ All legacy source files remain in place while v2 is tested.
 - CSP currently allows Google Fonts and VietQR image origins; review the policy if external services change.
 - The v2 folder is isolated; `main` is untouched until you explicitly merge the PR.
 
+
+## Query performance
+For a larger product catalog, review your query plans with `EXPLAIN` and optionally run `v2/performance_indexes.sql` **after a database backup**. The script avoids adding an index with the same name twice. Run it only after checking whether equivalent indexes already exist. Turn on PHP OPcache on production, compress static CSS/JS and use an image optimizer/CDN where appropriate; no throughput or load-test claim is made here.
+
 ## Configuration and files
 
 - `v2/app.php`: security, db, shared components
