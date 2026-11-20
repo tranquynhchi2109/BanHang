@@ -1,0 +1,11 @@
+# Hệ thống và IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+Thumbs.db
+Desktop.ini
+
+# File cấu hình nhạy cảm hoặc tạm thời nếu có
+*.bak
+*.tmp
