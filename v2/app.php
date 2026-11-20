@@ -12,8 +12,10 @@ ini_set('session.use_strict_mode', '1');
 ini_set('session.use_only_cookies', '1');
 $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
 session_name('BANHANG_V2');
+$cookiePath = str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/v2/index.php')));
+if ($cookiePath === '.' || $cookiePath === '') $cookiePath = '/';
 session_set_cookie_params([
-    'lifetime' => 0, 'path' => '/BanHang/v2', 'secure' => $https,
+    'lifetime' => 0, 'path' => $cookiePath, 'secure' => $https,
     'httponly' => true, 'samesite' => 'Lax',
 ]);
 if (session_status() !== PHP_SESSION_ACTIVE) {
@@ -23,7 +25,7 @@ header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: DENY');
 header('Referrer-Policy: strict-origin-when-cross-origin');
 header("Permissions-Policy: camera=(), microphone=(), geolocation=()");
-header("Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https://img.vietqr.io data:; font-src 'self'; form-action 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'");
+header("Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; img-src 'self' https://img.vietqr.io data:; font-src 'self' https://fonts.gstatic.com; form-action 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'");
 header('Cache-Control: no-store');
 
 function db(): PDO
