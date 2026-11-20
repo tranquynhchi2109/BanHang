@@ -224,6 +224,8 @@ function safe_image(string $filename, string $kind = 'product'): string
         return 'assets/fallback.svg';
     }
     $folder = $kind === 'news' ? 'quanlybaiviet' : 'quanlysp';
+    $local = dirname(__DIR__) . '/admin/modules/' . $folder . '/uploads/' . $basename;
+    if (!is_file($local)) return 'assets/fallback.svg';
     return '../admin/modules/' . $folder . '/uploads/' . rawurlencode($basename);
 }
 function setting(string $key, string $default = ''): string
