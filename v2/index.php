@@ -269,7 +269,7 @@ elseif ($page==='product') {
         echo '<div class="container section"><p class="breadcrumb"><a href="index.php">Trang chủ</a> / '.h($product['tendanhmuc']).' / '.h($product['tensanpham']).'</p>';
         echo '<div class="product-detail"><div class="product-detail__photo"><img src="'.h(safe_image($product['hinhanh'])).'" alt="'.h($product['tensanpham']).'"></div><div class="product-detail__info"><span class="badge">CHÍNH HÃNG</span>';
         echo '<h1>'.h($product['tensanpham']).'</h1><p class="rating">★ 4.9 <span>· Bảo hành theo quy định cửa hàng</span></p><p class="detail-price">'.money((int)$product['giasp']).'</p>';
-        echo '<p>'.h($product['tomtat']).'</p><p><strong>Tình trạng:</strong> '.((int)$product['soluong']>0?'Còn '.(int)$product['soluong'].' sản phẩm':'Tạm hết hàng').'</p>';
+        echo '<p>'.nl2br(h(strip_tags(str_ireplace(['<br>','<br/>','<br />'],"\n",(string)$product['tomtat'])))).'</p><p><strong>Tình trạng:</strong> '.((int)$product['soluong']>0?'Còn '.(int)$product['soluong'].' sản phẩm':'Tạm hết hàng').'</p>';
         if ((int)$product['soluong']>0) {
             echo '<form action="index.php" method="post" class="purchase-form">'.csrf_field().'<input type="hidden" name="action" value="add_cart"><input type="hidden" name="product_id" value="'.$id.'">';
             echo '<label>Số lượng <input class="field qty" name="qty" type="number" min="1" max="'.min((int)$product['soluong'],20).'" value="1" required></label><button class="button">＋ Thêm vào giỏ hàng</button></form>';
