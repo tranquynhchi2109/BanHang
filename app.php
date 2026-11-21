@@ -248,18 +248,18 @@ function attempt_key(string $kind, string $identity): string
 function throttle_login(string $kind, string $identity): void
 {
     $key = attempt_key($kind, $identity);
-    $result = row('SELECT COUNT(*) AS total FROM v2_login_attempts WHERE key_hash=? AND attempted_at > NOW() - INTERVAL 15 MINUTE', [$key]);
+    $result = row('SELECT COUNT(*) AS total FROM tbl_login_attempts WHERE key_hash=? AND attempted_at > NOW() - INTERVAL 15 MINUTE', [$key]);
     if ((int)($result['total'] ?? 0) >= 6) {
         throw new DomainException('Đăng nhập quá nhiều lần. Vui lòng thử lại sau 15 phút.');
     }
 }
 function failed_login(string $kind, string $identity): void
 {
-    run('INSERT INTO v2_login_attempts(key_hash) VALUES (?)', [attempt_key($kind, $identity)]);
+    run('INSERT INTO tbl_login_attempts(key_hash) VALUES (?)', [attempt_key($kind, $identity)]);
 }
 function successful_login(string $kind, string $identity): void
 {
-    run('DELETE FROM v2_login_attempts WHERE key_hash=?', [attempt_key($kind, $identity)]);
+    run('DELETE FROM tbl_login_attempts WHERE key_hash=?', [attempt_key($kind, $identity)]);
 }
 function verify_legacy_password(string $plain, string $hash): bool
 {
@@ -322,7 +322,7 @@ function setting(string $key, string $default = ''): string
         'bank_account' => '0973258529',
     ];
     if ($default === '' && isset($bankDefaults[$key])) $default = $bankDefaults[$key];
-    $result = row('SELECT setting_value FROM v2_settings WHERE setting_key=?', [$key]);
+    $result = row('SELECT setting_value FROM tbl_settings WHERE setting_key=?', [$key]);
     $stored = (string)($result['setting_value'] ?? '');
     return $stored !== '' ? $stored : $default;
 }

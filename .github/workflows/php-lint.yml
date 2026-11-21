@@ -46,7 +46,12 @@ jobs:
         run: |
           mysql -h 127.0.0.1 -uroot < web_mysqli.sql
           mysql -h 127.0.0.1 -uroot web_mysqli < database_upgrade.sql
-          mysql -h 127.0.0.1 -uroot web_mysqli -e "SHOW COLUMNS FROM v2_order_items LIKE 'variant_label';"
+          mysql -h 127.0.0.1 -uroot web_mysqli -e "SHOW COLUMNS FROM tbl_order_items LIKE 'variant_label';"
+          mysql -h 127.0.0.1 -uroot web_mysqli -e "INSERT INTO tbl_orders (order_code,user_id,customer_name,phone,delivery_address,total_amount) VALUES ('CI_DB_RENAME',1,'Test','0900000000','Test address',1000);"
+          mysql -h 127.0.0.1 -uroot web_mysqli -e "RENAME TABLE tbl_order_items TO v2_order_items, tbl_orders TO v2_orders, tbl_settings TO v2_settings, tbl_login_attempts TO v2_login_attempts;"
+          mysql -h 127.0.0.1 -uroot web_mysqli < doi_ten_bang_tbl.sql
+          test "$(mysql -h 127.0.0.1 -uroot -N -s web_mysqli -e "SELECT COUNT(*) FROM tbl_orders WHERE order_code='CI_DB_RENAME'")" = '1'
+          mysql -h 127.0.0.1 -uroot web_mysqli < database_upgrade.sql
           mysql -h 127.0.0.1 -uroot web_mysqli < bank_config_mbbank.sql
-          test "$(mysql -h 127.0.0.1 -uroot -N -s web_mysqli -e "SELECT setting_value FROM v2_settings WHERE setting_key='bank_id'")" = '970422'
-          test "$(mysql -h 127.0.0.1 -uroot -N -s web_mysqli -e "SELECT setting_value FROM v2_settings WHERE setting_key='bank_account'")" = '0973258529'
+          test "$(mysql -h 127.0.0.1 -uroot -N -s web_mysqli -e "SELECT setting_value FROM tbl_settings WHERE setting_key='bank_id'")" = '970422'
+          test "$(mysql -h 127.0.0.1 -uroot -N -s web_mysqli -e "SELECT setting_value FROM tbl_settings WHERE setting_key='bank_account'")" = '0973258529'

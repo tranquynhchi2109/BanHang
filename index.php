@@ -174,11 +174,11 @@ try {
                         $lines[]=['id'=>$entry['id'],'name'=>$product['tensanpham'],'variant'=>$entry['variant'],'price'=>$price,'qty'=>$entry['qty']];
                     }
                     $code='BH'.strtoupper(bin2hex(random_bytes(6)));
-                    run('INSERT INTO v2_orders(order_code,user_id,customer_name,phone,delivery_address,note,total_amount,payment_method)
+                    run('INSERT INTO tbl_orders(order_code,user_id,customer_name,phone,delivery_address,note,total_amount,payment_method)
                          VALUES (?,?,?,?,?,?,?,?)',[$code,$user['id_dangky'],$name,$phone,$address,$note,$total,$payment]);
                     $orderId=(int)db()->lastInsertId();
                     foreach ($lines as $line) {
-                        run('INSERT INTO v2_order_items(order_id,product_id,product_name,variant_label,unit_price,quantity) VALUES (?,?,?,?,?,?)',
+                        run('INSERT INTO tbl_order_items(order_id,product_id,product_name,variant_label,unit_price,quantity) VALUES (?,?,?,?,?,?)',
                             [$orderId,$line['id'],$line['name'],$line['variant'],$line['price'],$line['qty']]);
                     }
                     foreach ($requested as $id=>$quantity) {

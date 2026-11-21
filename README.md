@@ -22,7 +22,7 @@ This rebuild keeps the existing project folders and entry points:
 7. Open `http://localhost/<project-folder>/index.php` and `http://localhost/<project-folder>/admin/index.php`.
 8. Log in to the admin using the existing admin account. The seeded demo account in a fresh sample dump is `admin` / `123456`; change it before any public deployment.
 9. The default VietQR recipient is MB Bank (BIN `970422`), account `0973258529`, as supplied by the store owner. Do not assume the beneficiary name: set `bank_name` to the verified name in Admin > Cấu hình.
-10. On an existing installation with an earlier non-empty recipient configured in `v2_settings`, run `bank_config_mbbank.sql` once in phpMyAdmin (after a backup), or change the bank fields in Admin > Cấu hình. Existing non-empty admin settings intentionally override application defaults.
+10. On an existing installation with an earlier non-empty recipient configured in `tbl_settings`, run `bank_config_mbbank.sql` once in phpMyAdmin (after a backup), or change the bank fields in Admin > Cấu hình. Existing non-empty admin settings intentionally override application defaults.
 11. Before accepting a real payment, verify in your banking app that the QR resolves to the intended MB account and beneficiary name. VietQR does not automatically mark an order as paid.
 
 ## Security and behaviour
@@ -32,7 +32,7 @@ This rebuild keeps the existing project folders and entry points:
 - Checkout recalculates prices and checks stock server-side, locks stock rows and writes order items in a database transaction.
 - Product/news uploads are MIME-checked, size-limited and use random server-generated filenames.
 - Card number/CVV are never collected. Payment choices are COD or bank transfer with VietQR; QR generation is not proof of receipt. Admin must reconcile against the actual bank statement.
-- The old database tables and existing uploaded product/news images are retained. New orders are stored in additive `v2_orders` tables; the original `tbl_cart` history remains visible in customer and admin order screens.
+- The old database tables and existing uploaded product/news images are retained. New orders are stored in additive `tbl_orders` tables; the original `tbl_cart` history remains visible in customer and admin order screens.
 - Phone storage options (128GB, 256GB, 512GB and 1TB) are retained; variant prices are recalculated on the server and saved as order-item snapshots.
 - This project has not yet passed full integration, load or independent penetration testing. Do not describe it as production-audited until those tests are completed.
 
@@ -45,3 +45,26 @@ A GitHub Actions workflow runs PHP syntax checks and imports the legacy schema p
 - Back up and rehearse database restore.
 - Test checkout, inventory concurrency, account isolation, upload restrictions, CSRF, mobile layout and all legacy order screens.
 - Run `performance_indexes.sql` only after a backup and review existing indexes and EXPLAIN plans.
+
+## Database table names (tbl_ convention)
+
+All active tables created by the Premium checkout now start with `tbl_`:
+`tbl_orders`, `tbl_order_items`, `tbl_settings`, `tbl_login_attempts`.
+Legacy tables such as `tbl_cart`, `tbl_cart_details`, `tbl_sanpham`, and `tbl_dangky` remain unchanged.
+
+**Existing installations:** BACK UP the real `web_mysqli` database in phpMyAdmin first.
+**Before pulling code that refers to `tbl_*`**, run `doi_ten_bang_tbl.sql` in
+the existing database when it still has the old four `v2_*` tables and none of
+the corresponding new `tbl_*` tables. The script renames tables; it does not
+delete or copy records. Then run `database_upgrade.sql` to ensure the schema
+is current. Do not run the one-time rename script a second time.
+
+For a brand-new empty database (after importing the legacy schema), skip the
+rename and run only `database_upgrade.sql`.
+
+If BOTH old and new names are already present for any of these four tables,
+STOP: do not execute the rename and do not drop either table. Compare their
+contents and reconcile the migration first.
+
+Existing applications still using the old table names must be updated
+at the same time. The old `tbl_cart` orders are preserved separately.

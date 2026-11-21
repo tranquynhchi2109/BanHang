@@ -113,7 +113,7 @@ try {
                 $next=(string)($_POST['status']??'');
                 db()->beginTransaction();
                 try {
-                    $order=row('SELECT id,order_status,payment_status FROM v2_orders WHERE id=? FOR UPDATE',[$id]);
+                    $order=row('SELECT id,order_status,payment_status FROM tbl_orders WHERE id=? FOR UPDATE',[$id]);
                     if (!$order) throw new DomainException('Không tìm thấy đơn hàng.');
                     $transitions=[
                         'PENDING'=>['CONFIRMED','CANCELLED'],
@@ -125,12 +125,12 @@ try {
                     if (!in_array($next,$transitions[$order['order_status']]??[],true)) throw new DomainException('Chuyển trạng thái đơn hàng không được phép.');
                     if ($next==='CANCELLED') {
                         if ($order['payment_status']==='PAID') throw new DomainException('Đơn đã thanh toán cần xử lý hoàn tiền thủ công trước khi hủy.');
-                        $items=rows('SELECT product_id,quantity FROM v2_order_items WHERE order_id=?',[$id]);
+                        $items=rows('SELECT product_id,quantity FROM tbl_order_items WHERE order_id=?',[$id]);
                         foreach ($items as $item) {
                             run('UPDATE tbl_sanpham SET soluong=soluong+? WHERE id_sanpham=?',[(int)$item['quantity'],(int)$item['product_id']]);
                         }
                     }
-                    run('UPDATE v2_orders SET order_status=? WHERE id=?',[$next,$id]);
+                    run('UPDATE tbl_orders SET order_status=? WHERE id=?',[$next,$id]);
                     db()->commit();
                 } catch (Throwable $e) {
                     if (db()->inTransaction()) db()->rollBack();
@@ -140,7 +140,7 @@ try {
                 redirect_to(admin_to('order',['id'=>$id]));
             case 'mark_paid':
                 $id=as_int($_POST['id']??0);
-                $changed=run("UPDATE v2_orders SET payment_status='PAID'
+                $changed=run("UPDATE tbl_orders SET payment_status='PAID'
                     WHERE id=? AND payment_method='BANK' AND payment_status='UNPAID' AND order_status<>'CANCELLED'",[$id]);
                 if ($changed!==1) throw new DomainException('Đơn không hợp lệ hoặc đã được xác nhận.');
                 notice('Đã ghi nhận thanh toán do quản trị viên xác nhận.','success');
@@ -161,7 +161,7 @@ try {
                     mb_strlen($values['bank_name'])>150 || mb_strlen($values['contact_info'])>2000) throw new DomainException('Cấu hình ngân hàng hoặc cửa hàng không hợp lệ.');
                 foreach ($values as $key=>$value) {
                     if ($key==='contact_info') continue;
-                    run('INSERT INTO v2_settings(setting_key,setting_value) VALUES(?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)',[$key,$value]);
+                    run('INSERT INTO tbl_settings(setting_key,setting_value) VALUES(?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)',[$key,$value]);
                 }
                 run('INSERT INTO tbl_lienhe(id,thongtinlienhe) VALUES (1,?) ON DUPLICATE KEY UPDATE thongtinlienhe=VALUES(thongtinlienhe)',[$values['contact_info']]);
                 notice('Đã lưu cấu hình cửa hàng.','success');
@@ -265,10 +265,10 @@ if ($page==='login' && current_admin()===null) {
 require_admin();
 admin_page_head('Quản trị BanHang');
 if ($page==='dashboard') {
-    $income=row("SELECT COALESCE(SUM(total_amount),0) AS total,COUNT(*) AS n FROM v2_orders WHERE order_status<>'CANCELLED'");
+    $income=row("SELECT COALESCE(SUM(total_amount),0) AS total,COUNT(*) AS n FROM tbl_orders WHERE order_status<>'CANCELLED'");
     $customers=row('SELECT COUNT(*) AS n FROM tbl_dangky');
     $products=row('SELECT COUNT(*) AS n FROM tbl_sanpham');
-    $pending=row("SELECT COUNT(*) AS n FROM v2_orders WHERE order_status='PENDING'");
+    $pending=row("SELECT COUNT(*) AS n FROM tbl_orders WHERE order_status='PENDING'");
     admin_title('Tổng quan hệ thống','Số liệu cửa hàng và các đơn hàng mới nhất.');
     echo '<div class="stats">';
     stat_card('Doanh thu ghi nhận',money((int)($income['total']??0)),'Không tính đơn đã hủy');
@@ -277,7 +277,7 @@ if ($page==='dashboard') {
     stat_card('Sản phẩm',(string)($products['n']??0),'Tất cả trạng thái');
     echo '</div><div class="admin-grid"><div class="surface"><h2>Đơn hàng gần đây</h2>';
     admin_table_start(['Mã đơn','Khách','Giá trị','Trạng thái']);
-    foreach (rows('SELECT id,order_code,customer_name,total_amount,order_status FROM v2_orders ORDER BY id DESC LIMIT 8') as $o) {
+    foreach (rows('SELECT id,order_code,customer_name,total_amount,order_status FROM tbl_orders ORDER BY id DESC LIMIT 8') as $o) {
         echo '<tr><td><a class="link-blue" href="'.admin_to('order',['id'=>$o['id']]).'">'.h($o['order_code']).'</a></td><td>'.h($o['customer_name']).'</td><td>'.money((int)$o['total_amount']).'</td><td><span class="badge">'.h($o['order_status']).'</span></td></tr>';
     }
     admin_table_end();
@@ -346,7 +346,7 @@ elseif ($page==='orders' || $page==='payments') {
         echo '<a class="'.($status===$k?'active':'').'" href="'.admin_to('orders',['status'=>$k]).'">'.h($label).'</a>';
     echo '</div>';
     admin_table_start(['Mã đơn','Khách hàng','Ngày','Tổng tiền','Phương thức','Thanh toán','Trạng thái']);
-    foreach (rows('SELECT id,order_code,customer_name,created_at,total_amount,payment_method,payment_status,order_status FROM v2_orders'.$where.' ORDER BY id DESC LIMIT 100',$params) as $o) {
+    foreach (rows('SELECT id,order_code,customer_name,created_at,total_amount,payment_method,payment_status,order_status FROM tbl_orders'.$where.' ORDER BY id DESC LIMIT 100',$params) as $o) {
         echo '<tr><td><a class="link-blue" href="'.admin_to('order',['id'=>$o['id']]).'">'.h($o['order_code']).'</a></td><td>'.h($o['customer_name']).'</td><td>'.h($o['created_at']).'</td><td>'.money((int)$o['total_amount']).'</td><td>'.h($o['payment_method']).'</td><td>'.h($o['payment_status']).'</td><td><span class="badge">'.h($o['order_status']).'</span></td></tr>';
     }
     admin_table_end();
@@ -366,11 +366,11 @@ elseif ($page==='orders' || $page==='payments') {
 }
 elseif ($page==='order') {
     $id=as_int($_GET['id']??0);
-    $order=row('SELECT * FROM v2_orders WHERE id=?',[$id]);
+    $order=row('SELECT * FROM tbl_orders WHERE id=?',[$id]);
     if (!$order) throw new DomainException('Đơn hàng không tồn tại.');
     admin_title('Đơn hàng '. $order['order_code'],'Kiểm tra thông tin và cập nhật trạng thái.');
     echo '<div class="admin-grid"><div class="surface"><h2>Thông tin đơn hàng</h2><p>Khách hàng: <strong>'.h($order['customer_name']).'</strong></p><p>SĐT: '.h($order['phone']).'</p><p>Địa chỉ: '.h($order['delivery_address']).'</p><p>Ghi chú: '.h($order['note']).'</p><p>Ngày đặt: '.h($order['created_at']).'</p><hr><h3>Sản phẩm</h3>';
-    foreach (rows('SELECT product_name,variant_label,quantity,unit_price FROM v2_order_items WHERE order_id=?',[$id]) as $item) {
+    foreach (rows('SELECT product_name,variant_label,quantity,unit_price FROM tbl_order_items WHERE order_id=?',[$id]) as $item) {
         echo '<div class="summary-line"><span>'.h($item['product_name']).($item['variant_label']!=='BASE'?' · '.h($item['variant_label']):'').' × '.(int)$item['quantity'].'</span><strong>'.money((int)$item['unit_price']*(int)$item['quantity']).'</strong></div>';
     }
     echo '<hr><h2>Tổng tiền: '.money((int)$order['total_amount']).'</h2></div>';
@@ -415,7 +415,7 @@ elseif ($page==='legacy_order') {
 elseif ($page==='customers') {
     admin_title('Khách hàng','Dữ liệu tài khoản và lịch sử đặt hàng.');
     admin_table_start(['Khách hàng','Email','Số điện thoại','Địa chỉ','Số đơn']);
-    foreach (rows('SELECT u.id_dangky,u.tenkhachhang,u.email,u.dienthoai,u.diachi,(SELECT COUNT(*) FROM v2_orders o WHERE o.user_id=u.id_dangky) AS order_count FROM tbl_dangky u ORDER BY u.id_dangky DESC LIMIT 100') as $c)
+    foreach (rows('SELECT u.id_dangky,u.tenkhachhang,u.email,u.dienthoai,u.diachi,(SELECT COUNT(*) FROM tbl_orders o WHERE o.user_id=u.id_dangky) AS order_count FROM tbl_dangky u ORDER BY u.id_dangky DESC LIMIT 100') as $c)
         echo '<tr><td>'.h($c['tenkhachhang']).'</td><td>'.h($c['email']).'</td><td>'.h($c['dienthoai']).'</td><td>'.h($c['diachi']).'</td><td>'.(int)$c['order_count'].'</td></tr>';
     admin_table_end();
 }
@@ -428,15 +428,15 @@ elseif ($page==='inventory') {
 }
 elseif ($page==='revenue') {
     admin_title('Thống kê doanh thu','Báo cáo đơn hàng của cửa hàng.');
-    $total=row("SELECT COALESCE(SUM(total_amount),0) AS total,COUNT(*) AS n FROM v2_orders WHERE order_status<>'CANCELLED'");
-    $paid=row("SELECT COALESCE(SUM(total_amount),0) AS total FROM v2_orders WHERE payment_status='PAID'");
+    $total=row("SELECT COALESCE(SUM(total_amount),0) AS total,COUNT(*) AS n FROM tbl_orders WHERE order_status<>'CANCELLED'");
+    $paid=row("SELECT COALESCE(SUM(total_amount),0) AS total FROM tbl_orders WHERE payment_status='PAID'");
     echo '<div class="stats">';
     stat_card('Doanh thu chưa hủy',money((int)($total['total']??0)));
     stat_card('Giá trị đã xác nhận thanh toán',money((int)($paid['total']??0)));
     stat_card('Đơn chưa hủy',(string)($total['n']??0));
     echo '</div><div class="surface"><h2>Doanh thu theo tháng</h2>';
     admin_table_start(['Tháng','Số đơn','Giá trị']);
-    foreach (rows("SELECT DATE_FORMAT(created_at,'%Y-%m') AS month,COUNT(*) AS n,SUM(total_amount) AS total FROM v2_orders WHERE order_status<>'CANCELLED' GROUP BY DATE_FORMAT(created_at,'%Y-%m') ORDER BY month DESC LIMIT 12") as $m)
+    foreach (rows("SELECT DATE_FORMAT(created_at,'%Y-%m') AS month,COUNT(*) AS n,SUM(total_amount) AS total FROM tbl_orders WHERE order_status<>'CANCELLED' GROUP BY DATE_FORMAT(created_at,'%Y-%m') ORDER BY month DESC LIMIT 12") as $m)
         echo '<tr><td>'.h($m['month']).'</td><td>'.(int)$m['n'].'</td><td>'.money((int)$m['total']).'</td></tr>';
     admin_table_end();
     echo '</div>';

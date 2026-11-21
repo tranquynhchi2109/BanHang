@@ -163,7 +163,7 @@ elseif ($page==='orders' || $page==='order') {
     page_title($page==='orders'?'Đơn hàng của tôi':'Theo dõi đơn hàng','Xem tiến độ giao hàng và phương thức thanh toán.');
     echo '<div class="container section">';
     if ($page==='orders') {
-        $orders=rows('SELECT id,order_code,total_amount,order_status,payment_method,payment_status,created_at FROM v2_orders WHERE user_id=? ORDER BY id DESC LIMIT 50',[$user['id_dangky']]);
+        $orders=rows('SELECT id,order_code,total_amount,order_status,payment_method,payment_status,created_at FROM tbl_orders WHERE user_id=? ORDER BY id DESC LIMIT 50',[$user['id_dangky']]);
         echo '<div class="surface"><h2>Lịch sử đặt hàng</h2><div class="table-scroll"><table><thead><tr><th>Mã đơn</th><th>Ngày đặt</th><th>Số tiền</th><th>Trạng thái</th><th>Thanh toán</th></tr></thead><tbody>';
         foreach ($orders as $o) echo '<tr><td><a class="link-blue" href="'.link_to('order',['code'=>$o['order_code']]).'">'.h($o['order_code']).'</a></td><td>'.h($o['created_at']).'</td><td>'.money((int)$o['total_amount']).'</td><td>'.h($o['order_status']).'</td><td>'.h($o['payment_status']).'</td></tr>';
         echo '</tbody></table></div>';
@@ -176,11 +176,11 @@ elseif ($page==='orders' || $page==='order') {
         if (!$orders && !$legacyOrders) echo '<p>Chưa có đơn hàng.</p>';
     } else {
         $code=trim((string)($_GET['code']??''));
-        $order=row('SELECT * FROM v2_orders WHERE order_code=? AND user_id=?',[$code,$user['id_dangky']]);
+        $order=row('SELECT * FROM tbl_orders WHERE order_code=? AND user_id=?',[$code,$user['id_dangky']]);
         if (!$order) { http_response_code(404);echo '<div class="surface">Không tìm thấy đơn hàng của bạn.</div>'; }
         else {
             echo '<div class="checkout-layout"><section class="surface"><span class="badge">'.h($order['order_status']).'</span><h2>Đơn hàng '.h($order['order_code']).'</h2><p>Đặt lúc '.h($order['created_at']).'</p><div class="timeline"><span>Đã đặt</span><span>Đã xác nhận</span><span>Đang giao</span><span>Hoàn thành</span></div><h3>Sản phẩm</h3>';
-            foreach (rows('SELECT product_name,variant_label,quantity,unit_price FROM v2_order_items WHERE order_id=?',[$order['id']]) as $item) {
+            foreach (rows('SELECT product_name,variant_label,quantity,unit_price FROM tbl_order_items WHERE order_id=?',[$order['id']]) as $item) {
                 echo '<div class="summary-line"><span>'.h($item['product_name']).($item['variant_label']!=='BASE'?' · '.h($item['variant_label']):'').' × '.(int)$item['quantity'].'</span><strong>'.money((int)$item['unit_price']*(int)$item['quantity']).'</strong></div>';
             }
             echo '<hr><h3>Thông tin nhận hàng</h3><p>'.h($order['customer_name']).' · '.h($order['phone']).'</p><p>'.h($order['delivery_address']).'</p></section>';
