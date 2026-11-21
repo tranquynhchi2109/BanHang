@@ -15,6 +15,184 @@ function bank_display_label(string $bankId): string
     return $bankId !== '' ? $bankId : 'Ngân hàng nhận chuyển khoản';
 }
 
+/**
+ * Lock and validate all requested products in stable ID order.
+ * The storefront and integration tests use this exact production primitive.
+ *
+ * @param array<int,int> $requested product_id => aggregate quantity
+ * @return array<int,array<string,mixed>> product rows indexed by product ID
+ */
+function lock_checkout_products(PDO $pdo, array $requested): array
+{
+    if (!$requested) throw new DomainException('Giỏ hàng đang trống.');
+    $ids = [];
+    foreach ($requested as $productId => $quantity) {
+        $id = (int)$productId;
+        $qty = (int)$quantity;
+        if ($id < 1 || $qty < 1) throw new DomainException('Số lượng đặt hàng không hợp lệ.');
+        $ids[] = $id;
+    }
+    $ids = array_values(array_unique($ids));
+    sort($ids, SORT_NUMERIC);
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $pdo->prepare(
+        'SELECT p.id_sanpham,p.tensanpham,p.giasp,p.soluong,p.tinhtrang,c.tendanhmuc
+         FROM tbl_sanpham p
+         JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc
+         WHERE p.id_sanpham IN (' . $placeholders . ')
+         ORDER BY p.id_sanpham
+         FOR UPDATE'
+    );
+    $stmt->execute($ids);
+    $productMap = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $product) {
+        $productMap[(int)$product['id_sanpham']] = $product;
+    }
+    foreach ($requested as $productId => $quantity) {
+        $id = (int)$productId;
+        $product = $productMap[$id] ?? null;
+        if (!$product) throw new DomainException('Sản phẩm không còn tồn tại.');
+        if ((int)$product['tinhtrang'] !== 1 || (int)$product['soluong'] < (int)$quantity) {
+            throw new DomainException('Sản phẩm không đủ tồn kho. Vui lòng cập nhật giỏ hàng.');
+        }
+    }
+    return $productMap;
+}
+
+/** Deduct checkout stock and append inventory movements on the same PDO transaction. */
+function deduct_checkout_stock(
+    PDO $pdo,
+    array $requested,
+    array $productMap,
+    ?int $orderId,
+    int $customerId,
+    string $orderCode
+): void {
+    ksort($requested, SORT_NUMERIC);
+    $update = $pdo->prepare('UPDATE tbl_sanpham SET soluong=soluong-? WHERE id_sanpham=? AND soluong>=?');
+    $movement = $pdo->prepare(
+        "INSERT INTO tbl_inventory_movements
+         (product_id,order_id,movement_type,delta,stock_before,stock_after,reason,actor_type,actor_id)
+         VALUES (?,?,'ORDER_DEDUCT',?,?,?,?, 'CUSTOMER',?)"
+    );
+    foreach ($requested as $productId => $quantity) {
+        $id = (int)$productId;
+        $qty = (int)$quantity;
+        $product = $productMap[$id] ?? null;
+        if (!$product || $qty < 1) throw new RuntimeException('Dữ liệu tồn kho checkout không hợp lệ.');
+        $before = (int)$product['soluong'];
+        $update->execute([$qty, $id, $qty]);
+        if ($update->rowCount() !== 1) throw new RuntimeException('Không thể cập nhật kho.');
+        $movement->execute([
+            $id, $orderId, -$qty, $before, $before - $qty,
+            "Trừ tồn kho khi khách đặt đơn {$orderCode}", $customerId,
+        ]);
+    }
+}
+
+/**
+ * Create an order using the exact stock-locking primitives used by the storefront.
+ * The controller clears the session cart only after this transaction commits.
+ */
+function create_order_from_cart(array $user, array $cart, array $data): array
+{
+    $customerId = (int)($user['id_dangky'] ?? 0);
+    if ($customerId < 1) throw new DomainException('Vui lòng đăng nhập trước khi đặt hàng.');
+    if (!$cart) throw new DomainException('Giỏ hàng đang trống.');
+    $name = trim((string)($data['name'] ?? ''));
+    $phone = trim((string)($data['phone'] ?? ''));
+    $address = trim((string)($data['address'] ?? ''));
+    $note = trim((string)($data['note'] ?? ''));
+    $payment = (string)($data['payment'] ?? 'COD');
+    if (mb_strlen($name) < 2 || mb_strlen($name) > 160 ||
+        !preg_match('/^[0-9+().\\-\\s]{9,25}$/', $phone) ||
+        mb_strlen($address) < 10 || mb_strlen($address) > 500 || mb_strlen($note) > 500 ||
+        !in_array($payment, ['COD', 'BANK'], true)) {
+        throw new DomainException('Thông tin giao hàng không hợp lệ.');
+    }
+    if ($payment === 'BANK' && (setting('bank_id') === '' || setting('bank_account') === '')) {
+        throw new DomainException('Cửa hàng chưa cấu hình nhận chuyển khoản. Hãy chọn COD.');
+    }
+
+    $entries = [];
+    $requested = [];
+    foreach ($cart as $cartKey => $quantity) {
+        [$id, $variant] = parse_cart_key((string)$cartKey);
+        $quantity = (int)$quantity;
+        if ($id < 1 || $quantity < 1 || $quantity > 20) {
+            throw new DomainException('Số lượng đặt hàng không hợp lệ.');
+        }
+        $entries[] = ['id' => $id, 'variant' => $variant, 'qty' => $quantity];
+        $requested[$id] = ($requested[$id] ?? 0) + $quantity;
+    }
+
+    db()->beginTransaction();
+    try {
+        $productMap = lock_checkout_products(db(), $requested);
+        foreach ($entries as &$entry) {
+            $product = $productMap[$entry['id']];
+            if (is_phone_product($product) && $entry['variant'] === 'BASE') $entry['variant'] = '128GB';
+            if (!is_phone_product($product)) $entry['variant'] = 'BASE';
+        }
+        unset($entry);
+
+        $total = 0;
+        $lines = [];
+        foreach ($entries as $entry) {
+            $product = $productMap[$entry['id']];
+            $price = variant_price($product, $entry['variant'], true);
+            if ($price <= 0) throw new DomainException('Giá sản phẩm không hợp lệ.');
+            $total += $price * $entry['qty'];
+            if ($total > 1000000000000) throw new DomainException('Giá trị đơn hàng vượt giới hạn.');
+            $lines[] = [
+                'id' => $entry['id'], 'name' => $product['tensanpham'],
+                'variant' => $entry['variant'], 'price' => $price, 'qty' => $entry['qty'],
+            ];
+        }
+        $expectedTotal = filter_var($data['expected_total'] ?? null, FILTER_VALIDATE_INT);
+        if ($expectedTotal === false || $expectedTotal !== $total) {
+            throw new DomainException('Giá hoặc tổng tiền đã thay đổi. Vui lòng kiểm tra lại giỏ hàng trước khi đặt.');
+        }
+
+        $code = 'BH' . strtoupper(bin2hex(random_bytes(6)));
+        run(
+            'INSERT INTO tbl_orders(order_code,user_id,customer_name,phone,delivery_address,note,total_amount,payment_method)
+             VALUES (?,?,?,?,?,?,?,?)',
+            [$code, $customerId, $name, $phone, $address, $note, $total, $payment]
+        );
+        $orderId = (int)db()->lastInsertId();
+        if ($payment === 'BANK') save_order_payment_snapshot($orderId, $code, $total);
+        foreach ($lines as $line) {
+            run(
+                'INSERT INTO tbl_order_items(order_id,product_id,product_name,variant_label,unit_price,quantity)
+                 VALUES (?,?,?,?,?,?)',
+                [$orderId, $line['id'], $line['name'], $line['variant'], $line['price'], $line['qty']]
+            );
+        }
+        deduct_checkout_stock(db(), $requested, $productMap, $orderId, $customerId, $code);
+
+        $orderLink = link_to('order', ['code' => $code]);
+        $initNote = $payment === 'BANK'
+            ? 'Đơn hàng chuyển khoản VietQR đã được tạo, đang chờ khách chuyển khoản và cửa hàng đối soát.'
+            : 'Đơn hàng thanh toán khi nhận hàng (COD) đã được tạo, đang chờ cửa hàng xác nhận.';
+        record_order_history($orderId, null, 'PENDING', 'CUSTOMER', $customerId, $initNote, true);
+        create_notification(
+            $customerId, $orderId, 'ORDER_CREATED', 'Đặt hàng thành công!',
+            "Đơn hàng {$code} với tổng giá trị " . money($total) . " (" . payment_method_label($payment) . ") đã được ghi nhận."
+                . ($payment === 'BANK' ? ' Vui lòng chuyển khoản đúng nội dung để cửa hàng đối soát.' : ' Cửa hàng sẽ sớm xác nhận và chuẩn bị hàng.'),
+            $orderLink, "order_created:{$orderId}"
+        );
+        $createdOrder = row('SELECT * FROM tbl_orders WHERE id=?', [$orderId]);
+        if (!$createdOrder) throw new RuntimeException('Đã tạo đơn nhưng không thể đọc lại thông tin đơn hàng.');
+        queue_order_email($createdOrder, 'ORDER_CREATED', $initNote, "email_created:{$orderId}");
+        db()->commit();
+        return $createdOrder;
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        throw $e;
+    }
+}
+
 function save_order_payment_snapshot(int $orderId, string $orderCode, int $totalAmount): array
 {
     $bankId = strtoupper(trim(setting('bank_id')));

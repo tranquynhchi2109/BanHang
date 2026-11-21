@@ -1,6 +1,27 @@
 <?php
 declare(strict_types=1);
 
+// Destructive integration tests are CLI-only and require explicit opt-in plus a
+// dedicated *_test/_testing/_ci schema. This guard runs before app initialization.
+$entryScript = realpath((string)($_SERVER['SCRIPT_FILENAME'] ?? ''));
+$testsDirectory = realpath(__DIR__ . '/tests');
+$isIntegrationTest = $entryScript !== false && $testsDirectory !== false
+    && str_starts_with($entryScript, $testsDirectory . DIRECTORY_SEPARATOR);
+if ($isIntegrationTest) {
+    $localConfigPath = __DIR__ . '/admin/config/config.local.php';
+    $localConfig = is_file($localConfigPath) ? require $localConfigPath : [];
+    if (!is_array($localConfig)) $localConfig = [];
+    $testDbName = (string)(getenv('DB_NAME') !== false ? getenv('DB_NAME') : ($localConfig['DB_NAME'] ?? 'web_mysqli'));
+    if (PHP_SAPI !== 'cli' || getenv('BANHANG_TEST_MODE') !== '1'
+        || !preg_match('/(?:^|_)(?:test|testing|ci)(?:_|$)/i', $testDbName)) {
+        if (PHP_SAPI !== 'cli') http_response_code(403);
+        $message = "Refusing integration tests: use CLI, BANHANG_TEST_MODE=1 and a dedicated *_test or *_ci database.\n";
+        if (PHP_SAPI === 'cli') fwrite(STDERR, $message);
+        else echo $message;
+        exit(2);
+    }
+}
+
 /**
  * BanHang shared infrastructure.
  * Public front controllers: index.php and admin/index.php.
@@ -759,13 +780,8 @@ function backup_image(string $category = ''): string
 }
 function setting(string $key, string $default = ''): string
 {
-    // Public recipient details only, never passwords or API credentials.
-    // Admin-configured non-empty values take precedence over these defaults.
-    $bankDefaults = [
-        'bank_id' => '970422',       // MB Bank (Napas BIN)
-        'bank_account' => '0973258529',
-    ];
-    if ($default === '' && isset($bankDefaults[$key])) $default = $bankDefaults[$key];
+    // Empty bank_id/bank_account are intentional: an empty value disables BANK checkout.
+    // Defaults are used only when the caller explicitly supplies one.
     $result = row('SELECT setting_value FROM tbl_settings WHERE setting_key=?', [$key]);
     $stored = (string)($result['setting_value'] ?? '');
     return $stored !== '' ? $stored : $default;
