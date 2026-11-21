@@ -11,7 +11,7 @@ ini_set('log_errors', '1');
 ini_set('session.use_strict_mode', '1');
 ini_set('session.use_only_cookies', '1');
 $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
-session_name('BANHANG_V2');
+session_name('PHPSESSID');
 $cookiePath = str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/v2/index.php')));
 if ($cookiePath === '.' || $cookiePath === '') $cookiePath = '/';
 session_set_cookie_params([
@@ -28,11 +28,25 @@ header("Permissions-Policy: camera=(), microphone=(), geolocation=()");
 header("Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; img-src 'self' https://img.vietqr.io data:; font-src 'self' https://fonts.gstatic.com; form-action 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'");
 header('Cache-Control: no-store');
 
+function base_path(): string
+{
+    static $base = null;
+    if ($base !== null) return $base;
+    $directory = str_replace('\\\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/index.php')));
+    if (preg_match('~/admin$~', $directory)) $directory = substr($directory, 0, -6);
+    $base = rtrim($directory, '/');
+    return $base;
+}
+function project_url(string $path): string
+{
+    return base_path() . '/' . ltrim($path, '/');
+}
+
 function db(): PDO
 {
     static $db = null;
     if ($db instanceof PDO) return $db;
-    $config = is_file(__DIR__ . '/config.local.php') ? require __DIR__ . '/config.local.php' : [];
+    $config = is_file(__DIR__ . '/admin/config/config.local.php') ? require __DIR__ . '/admin/config/config.local.php' : [];
     $get = static fn(string $key, string $default): string =>
         (string) (getenv($key) !== false ? getenv($key) : ($config[$key] ?? $default));
     $host = $get('DB_HOST', '127.0.0.1');
@@ -78,11 +92,11 @@ function money(int|float|string $amount): string
 }
 function link_to(string $page, array $args = []): string
 {
-    return 'index.php?' . http_build_query(['page' => $page] + $args, '', '&', PHP_QUERY_RFC3986);
+    return project_url('index.php') . '?' . http_build_query(['page' => $page] + $args, '', '&', PHP_QUERY_RFC3986);
 }
 function admin_to(string $page, array $args = []): string
 {
-    return 'admin.php?' . http_build_query(['page' => $page] + $args, '', '&', PHP_QUERY_RFC3986);
+    return project_url('admin/index.php') . '?' . http_build_query(['page' => $page] + $args, '', '&', PHP_QUERY_RFC3986);
 }
 function redirect_to(string $url): never
 {
@@ -141,6 +155,30 @@ function current_admin(): ?array
     $id = filter_var($_SESSION['admin_id'] ?? null, FILTER_VALIDATE_INT);
     if (!$id || $id < 1) return null;
     return row('SELECT id_admin,username,admin_status FROM tbl_admin WHERE id_admin=? AND admin_status=1', [$id]);
+}
+function migrate_legacy_session(): void
+{
+    if (!isset($_SESSION['customer_id']) && isset($_SESSION['id_khachhang'])) {
+        $_SESSION['customer_id'] = (int)$_SESSION['id_khachhang'];
+    }
+    if (!isset($_SESSION['admin_id']) && isset($_SESSION['dangnhap']) && is_string($_SESSION['dangnhap'])) {
+        $legacyAdmin = row('SELECT id_admin FROM tbl_admin WHERE username=? AND admin_status=1 LIMIT 1', [$_SESSION['dangnhap']]);
+        if ($legacyAdmin) $_SESSION['admin_id'] = (int)$legacyAdmin['id_admin'];
+    }
+    $cart = $_SESSION['cart'] ?? [];
+    if (!is_array($cart) || !$cart) return;
+    $normalized = [];
+    foreach ($cart as $key => $item) {
+        if (is_array($item)) {
+            $id = (int)($item['id'] ?? 0);
+            $quantity = (int)($item['soluong'] ?? 0);
+        } else {
+            $id = (int)$key;
+            $quantity = (int)$item;
+        }
+        if ($id > 0 && $quantity > 0) $normalized[$id] = min(20, ($normalized[$id] ?? 0) + $quantity);
+    }
+    $_SESSION['cart'] = $normalized;
 }
 function require_admin(): array
 {
@@ -219,14 +257,14 @@ function login_admin(string $username, string $password): bool
 }
 function safe_image(string $filename, string $kind = 'product'): string
 {
-    $basename = basename(str_replace('\\', '/', $filename));
-    if ($basename === '' || !preg_match('/\.(?:png|jpe?g|webp)$/i', $basename)) {
-        return 'assets/fallback.svg';
+    $basename = basename(str_replace('\\\\', '/', $filename));
+    if ($basename === '' || !preg_match('/\\.(?:png|jpe?g|webp)$/i', $basename)) {
+        return project_url('images/fallback.svg');
     }
     $folder = $kind === 'news' ? 'quanlybaiviet' : 'quanlysp';
-    $local = dirname(__DIR__) . '/admin/modules/' . $folder . '/uploads/' . $basename;
-    if (!is_file($local)) return 'assets/fallback.svg';
-    return '../admin/modules/' . $folder . '/uploads/' . rawurlencode($basename);
+    $local = __DIR__ . '/admin/modules/' . $folder . '/uploads/' . $basename;
+    if (!is_file($local)) return project_url('images/fallback.svg');
+    return project_url('admin/modules/' . $folder . '/uploads/' . rawurlencode($basename));
 }
 function setting(string $key, string $default = ''): string
 {
@@ -254,7 +292,7 @@ function page_head(string $title, bool $admin = false): void
     $full = h($title . ' | ' . setting('store_name', 'BanHang Tech Store'));
     echo '<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
     echo '<title>' . $full . '</title><meta name="description" content="BanHang — công nghệ cho cuộc sống hiện đại.">';
-    echo '<link rel="stylesheet" href="assets/site.css"><script src="assets/app.js" defer></script></head><body>';
+    echo '<link rel="stylesheet" href="' . h(project_url('css/style.css')) . '"><script src="' . h(project_url('js/app.js')) . '" defer></script></head><body>';
     if ($admin) return;
     $user = current_user();
     $count = array_sum(array_map('intval', $_SESSION['cart'] ?? []));
@@ -267,7 +305,7 @@ function page_head(string $title, bool $admin = false): void
     echo '<nav class="nav container" id="mobile-nav"><a href="' . link_to('products') . '">Tất cả sản phẩm</a><a href="' . link_to('products', ['category' => 'phone']) . '">Điện thoại</a>';
     echo '<a href="' . link_to('products', ['category' => 'laptop']) . '">Laptop</a><a href="' . link_to('products', ['category' => 'audio']) . '">Âm thanh</a>';
     echo '<a href="' . link_to('products', ['category' => 'watch']) . '">Đồng hồ</a><a href="' . link_to('products', ['category' => 'accessories']) . '">Phụ kiện</a>';
-    echo '<a href="' . link_to('news') . '">Tin công nghệ</a><a href="' . link_to('orders') . '">Đơn hàng</a><a href="admin.php">Admin</a></nav></header>';
+    echo '<a href="' . link_to('news') . '">Tin công nghệ</a><a href="' . link_to('orders') . '">Đơn hàng</a><a href="' . admin_to('dashboard') . '">Quản trị</a></nav></header>';
 }
 function page_foot(bool $admin = false): void
 {
