@@ -30,7 +30,7 @@ This rebuild keeps the existing project folders and entry points:
 - Checkout recalculates prices and checks stock server-side, locks stock rows and writes order items in a database transaction.
 - Product/news uploads are MIME-checked, size-limited and use random server-generated filenames.
 - Card number/CVV are never collected. Payment choices are COD or bank transfer with VietQR; QR generation is not proof of receipt. Admin must reconcile against the actual bank statement.
-- The old database tables and existing uploaded product/news images are retained. New orders are stored in additive `v2_orders` tables; the original `tbl_cart` history is not deleted.
+- The old database tables and existing uploaded product/news images are retained. New orders are stored in additive `v2_orders` tables; the original `tbl_cart` history remains visible in customer and admin order screens.
 - Phone storage options (128GB, 256GB, 512GB and 1TB) are retained; variant prices are recalculated on the server and saved as order-item snapshots.
 - This project has not yet passed full integration, load or independent penetration testing. Do not describe it as production-audited until those tests are completed.
 

@@ -167,8 +167,13 @@ elseif ($page==='orders' || $page==='order') {
         echo '<div class="surface"><h2>Lịch sử đặt hàng</h2><div class="table-scroll"><table><thead><tr><th>Mã đơn</th><th>Ngày đặt</th><th>Số tiền</th><th>Trạng thái</th><th>Thanh toán</th></tr></thead><tbody>';
         foreach ($orders as $o) echo '<tr><td><a class="link-blue" href="'.link_to('order',['code'=>$o['order_code']]).'">'.h($o['order_code']).'</a></td><td>'.h($o['created_at']).'</td><td>'.money((int)$o['total_amount']).'</td><td>'.h($o['order_status']).'</td><td>'.h($o['payment_status']).'</td></tr>';
         echo '</tbody></table></div>';
-        if (!$orders) echo '<p>Chưa có đơn hàng.</p>';
+        $legacyOrders=rows('SELECT id_cart,code_cart,cart_date,cart_payment,tongtien,cart_status FROM tbl_cart WHERE id_khachhang=? ORDER BY id_cart DESC LIMIT 50',[$user['id_dangky']]);
+        echo '</div><div class="surface legacy-orders"><h2>Lịch sử đơn hàng trước đây</h2><div class="table-scroll"><table><thead><tr><th>Mã đơn</th><th>Ngày đặt</th><th>Số tiền</th><th>Thanh toán</th><th>Trạng thái</th></tr></thead><tbody>';
+        foreach ($legacyOrders as $old) echo '<tr><td><a class="link-blue" href="'.link_to('legacy_order',['id'=>$old['id_cart']]).'">'.h($old['code_cart']).'</a></td><td>'.h($old['cart_date']).'</td><td>'.money((int)$old['tongtien']).'</td><td>'.h($old['cart_payment']).'</td><td>'.((int)$old['cart_status']===1?'Đang chờ cửa hàng xem':'Đã được xem').'</td></tr>';
+        echo '</tbody></table></div>';
+        if (!$legacyOrders) echo '<p>Không có đơn hàng cũ.</p>';
         echo '</div>';
+        if (!$orders && !$legacyOrders) echo '<p>Chưa có đơn hàng.</p>';
     } else {
         $code=trim((string)($_GET['code']??''));
         $order=row('SELECT * FROM v2_orders WHERE order_code=? AND user_id=?',[$code,$user['id_dangky']]);
@@ -191,6 +196,22 @@ elseif ($page==='orders' || $page==='order') {
         }
     }
     echo '</div>';
+}
+elseif ($page==='legacy_order') {
+    $user=require_customer();
+    $legacyId=as_int($_GET['id']??0);
+    $order=row('SELECT * FROM tbl_cart WHERE id_cart=? AND id_khachhang=?',[$legacyId,$user['id_dangky']]);
+    page_title('Đơn hàng cũ','Thông tin đơn hàng được lưu từ hệ thống trước.');
+    if (!$order) {
+        http_response_code(404);
+        echo '<div class="container section"><div class="surface">Không tìm thấy đơn hàng của bạn.</div></div>';
+    } else {
+        echo '<div class="container section"><div class="checkout-layout"><section class="surface"><span class="badge">'.((int)$order['cart_status']===1?'Chưa xem':'Đã xem').'</span><h2>Đơn hàng '.h($order['code_cart']).'</h2><p>Ngày đặt: '.h($order['cart_date']).'</p><h3>Sản phẩm</h3>';
+        foreach (rows('SELECT d.soluongmua,d.dungluong,p.tensanpham FROM tbl_cart_details d LEFT JOIN tbl_sanpham p ON p.id_sanpham=d.id_sanpham WHERE d.code_cart=? ORDER BY d.id_cart_details',[$order['code_cart']]) as $item) {
+            echo '<div class="summary-line"><span>'.h($item['tensanpham']??'Sản phẩm không còn trong danh mục').($item['dungluong']!==''?' · '.h($item['dungluong']):'').' × '.(int)$item['soluongmua'].'</span></div>';
+        }
+        echo '</section><aside class="surface order-summary"><h2>Thông tin thanh toán</h2><p>Phương thức: '.h($order['cart_payment']).'</p><p class="detail-price">'.money((int)$order['tongtien']).'</p><p class="hint">Đơn hàng này được tạo bằng phiên bản cũ; trạng thái thanh toán và giao hàng chi tiết chưa được lưu trong bảng gốc.</p><a class="button button--light" href="'.link_to('orders').'">Quay lại lịch sử đơn</a></aside></div></div>';
+    }
 }
 elseif ($page==='news' || $page==='article') {
     if ($page==='news') {

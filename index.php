@@ -14,7 +14,7 @@ $legacyRoutes = [
 $page = (string)($_GET['page'] ?? ($legacyRoutes[$legacyPage] ?? 'home'));
 if ($legacyPage === 'danhmucsanpham' && isset($_GET['id'])) $_GET['category_id'] = (int)$_GET['id'];
 if ($legacyPage === 'timkiem') $_GET['q'] = (string)($_POST['tukhoa'] ?? $_GET['q'] ?? '');
-$known = ['home','products','product','cart','checkout','login','register','account','password','orders','order','news','article','recommendations','contact'];
+$known = ['home','products','product','cart','checkout','login','register','account','password','orders','order','news','article','recommendations','contact','legacy_order'];
 if (!in_array($page,$known,true)) $page='home';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['timkiem'])) {

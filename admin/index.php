@@ -3,7 +3,7 @@ declare(strict_types=1);
 require dirname(__DIR__) . '/app.php';
 migrate_legacy_session();
 $page=(string)($_GET['page']??'dashboard');
-$pages=['login','dashboard','products','product_form','categories','orders','order','customers','payments','inventory','revenue','recommendations','news','article_form','settings'];
+$pages=['login','dashboard','products','product_form','categories','orders','order','customers','payments','inventory','revenue','recommendations','news','article_form','settings','legacy_order'];
 if (!in_array($page,$pages,true)) $page='dashboard';
 
 function save_product_upload(?string $previous): string
@@ -102,6 +102,12 @@ try {
                 else run('INSERT INTO tbl_danhmuc(tendanhmuc,thutu) VALUES (?,?)',[$name,$sort]);
                 notice('Đã lưu danh mục.','success');
                 redirect_to(admin_to('categories'));
+            case 'legacy_order_seen':
+                $legacyId=as_int($_POST['id']??0);
+                $changed=run('UPDATE tbl_cart SET cart_status=0 WHERE id_cart=?',[$legacyId]);
+                if ($changed!==1) throw new DomainException('Không tìm thấy đơn hàng cũ.');
+                notice('Đã đánh dấu đơn hàng là đã xem.','success');
+                redirect_to(admin_to('legacy_order',['id'=>$legacyId]));
             case 'order_status':
                 $id=as_int($_POST['id']??0);
                 $next=(string)($_POST['status']??'');
@@ -183,7 +189,7 @@ try {
     notice($e->getMessage(),'danger');
     $target=match((string)($_POST['action']??'')) {
         'login_admin'=>'login','save_product'=>'product_form','save_category'=>'categories',
-        'order_status','mark_paid'=>'orders','save_settings'=>'settings','save_article'=>'article_form',
+        'order_status','mark_paid'=>'orders','legacy_order_seen'=>'legacy_order','save_settings'=>'settings','save_article'=>'article_form',
         default=>'dashboard'
     };
     redirect_to(admin_to($target));
@@ -202,6 +208,7 @@ function admin_page_head(string $title): void
         'products'=>['▣','Sản phẩm'],
         'categories'=>['▦','Danh mục'],
         'orders'=>['♧','Đơn hàng'],
+        'legacy_order'=>['▤','Đơn hàng cũ'],
         'customers'=>['♙','Khách hàng'],
         'payments'=>['▤','Thanh toán'],
         'inventory'=>['◫','Kho hàng'],
@@ -340,6 +347,19 @@ elseif ($page==='orders' || $page==='payments') {
         echo '<tr><td><a class="link-blue" href="'.admin_to('order',['id'=>$o['id']]).'">'.h($o['order_code']).'</a></td><td>'.h($o['customer_name']).'</td><td>'.h($o['created_at']).'</td><td>'.money((int)$o['total_amount']).'</td><td>'.h($o['payment_method']).'</td><td>'.h($o['payment_status']).'</td><td><span class="badge">'.h($o['order_status']).'</span></td></tr>';
     }
     admin_table_end();
+    if ($page==='orders') {
+        $legacyOrders=rows('SELECT c.id_cart,c.code_cart,c.cart_status,c.cart_date,c.cart_payment,c.tongtien,u.tenkhachhang,u.dienthoai
+                            FROM tbl_cart c LEFT JOIN tbl_dangky u ON u.id_dangky=c.id_khachhang
+                            ORDER BY c.id_cart DESC LIMIT 50');
+        echo '<section class="surface legacy-orders"><h2>Đơn hàng từ hệ thống trước</h2><p class="hint">Lịch sử trong tbl_cart được giữ nguyên; trạng thái cũ chỉ thể hiện đã xem hay chưa xem.</p>';
+        admin_table_start(['Mã đơn','Khách hàng','Ngày đặt','Tổng tiền','Thanh toán','Trạng thái']);
+        foreach ($legacyOrders as $old) {
+            echo '<tr><td><a class="link-blue" href="'.admin_to('legacy_order',['id'=>$old['id_cart']]).'">'.h($old['code_cart']).'</a></td><td>'.h($old['tenkhachhang']??'Khách hàng cũ').'<br><small>'.h($old['dienthoai']??'').'</small></td><td>'.h($old['cart_date']).'</td><td>'.money((int)$old['tongtien']).'</td><td>'.h($old['cart_payment']).'</td><td>'.((int)$old['cart_status']===1?'Chưa xem':'Đã xem').'</td></tr>';
+        }
+        admin_table_end();
+        if (!$legacyOrders) echo '<p>Không có đơn hàng cũ.</p>';
+        echo '</section>';
+    }
 }
 elseif ($page==='order') {
     $id=as_int($_GET['id']??0);
@@ -360,6 +380,22 @@ elseif ($page==='order') {
     if ($order['payment_method']==='BANK' && $order['payment_status']==='UNPAID' && $order['order_status']!=='CANCELLED')
         echo '<hr><p class="hint">Chỉ bấm sau khi kiểm tra ngân hàng đã nhận tiền.</p><form method="post">'.csrf_field().'<input type="hidden" name="action" value="mark_paid"><input type="hidden" name="id" value="'.$id.'"><button class="button" data-confirm="Đã đối soát và nhận đủ số tiền?">Xác nhận đã nhận chuyển khoản</button></form>';
     echo '</div></div>';
+}
+elseif ($page==='legacy_order') {
+    $legacyId=as_int($_GET['id']??0);
+    $order=row('SELECT c.*,u.tenkhachhang,u.email,u.dienthoai,u.diachi FROM tbl_cart c LEFT JOIN tbl_dangky u ON u.id_dangky=c.id_khachhang WHERE c.id_cart=?',[$legacyId]);
+    if (!$order) throw new DomainException('Không tìm thấy đơn hàng cũ.');
+    admin_title('Đơn hàng cũ '.$order['code_cart'],'Dữ liệu được giữ từ hệ thống BanHang ban đầu.');
+    echo '<div class="admin-grid"><section class="surface"><h2>Thông tin khách hàng</h2><p><strong>'.h($order['tenkhachhang']??'Khách hàng cũ').'</strong></p><p>'.h($order['email']??'').'</p><p>'.h($order['dienthoai']??'').'</p><p>'.h($order['diachi']??'').'</p><p>Ngày đặt: '.h($order['cart_date']).'</p><p>Thanh toán: '.h($order['cart_payment']).'</p><h2>Tổng tiền đã lưu: '.money((int)$order['tongtien']).'</h2></section>';
+    echo '<section class="surface"><h2>Sản phẩm trong đơn</h2>';
+    foreach (rows('SELECT d.soluongmua,d.dungluong,p.tensanpham FROM tbl_cart_details d LEFT JOIN tbl_sanpham p ON p.id_sanpham=d.id_sanpham WHERE d.code_cart=? ORDER BY d.id_cart_details',[$order['code_cart']]) as $item) {
+        echo '<div class="summary-line"><span>'.h($item['tensanpham']??'Sản phẩm không còn trong danh mục').($item['dungluong']!==''?' · '.h($item['dungluong']):'').' × '.(int)$item['soluongmua'].'</span></div>';
+    }
+    echo '<hr><p>Trạng thái lưu trữ: <strong>'.((int)$order['cart_status']===1?'Chưa xem':'Đã xem').'</strong></p>';
+    if ((int)$order['cart_status']===1) {
+        echo '<form method="post">'.csrf_field().'<input type="hidden" name="action" value="legacy_order_seen"><input type="hidden" name="id" value="'.$legacyId.'"><button class="button">Đánh dấu đã xem</button></form>';
+    }
+    echo '</section></div>';
 }
 elseif ($page==='customers') {
     admin_title('Khách hàng','Dữ liệu tài khoản và lịch sử đặt hàng.');
