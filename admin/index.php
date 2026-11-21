@@ -447,7 +447,11 @@ if ($page==='dashboard') {
     $lowStock=(int)(row('SELECT COUNT(*) AS n FROM tbl_sanpham WHERE soluong<=5')['n']??0);
     $customersCount=(int)(row('SELECT COUNT(*) AS n FROM tbl_dangky')['n']??0);
     $pendingRec=(int)($kpi['pending_reconciliation']??0);
+    $pendingCancellationCount=(int)(row("SELECT COUNT(*) AS n FROM tbl_order_cancel_requests WHERE status='PENDING'")['n']??0);
     admin_title('Tổng quan hệ thống','Theo dõi vận hành, đối soát thanh toán và doanh thu thực nhận.');
+    if ($pendingCancellationCount>0) {
+        echo '<div class="alert info admin-cta-banner"><span>📩 Có <strong>'.$pendingCancellationCount.'</strong> yêu cầu hủy đơn hàng từ khách cần Admin xem xét.</span><a class="button" href="'.admin_to('orders',['cancel'=>'pending']).'">Duyệt yêu cầu hủy →</a></div>';
+    }
     if ($pendingRec>0) {
         echo '<div class="alert info admin-cta-banner"><span>🔔 Hiện có <strong>'.$pendingRec.'</strong> đơn chuyển khoản VietQR khách đã báo chuyển tiền và đang chờ Admin đối soát sao kê MB Bank.</span><a class="button" href="'.admin_to('payments',['review'=>'REPORTED']).'">Đối soát ngay →</a></div>';
     }
