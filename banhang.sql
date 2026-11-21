@@ -395,6 +395,24 @@ CREATE TABLE IF NOT EXISTS tbl_order_payment_details (
   CONSTRAINT fk_banhang_payment_details_order FOREIGN KEY (order_id) REFERENCES tbl_orders(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+
+-- Customer-initiated cancellation requests requiring an administrator's review.
+-- The unique order_id prevents repeated form submissions from creating duplicate requests.
+CREATE TABLE IF NOT EXISTS tbl_order_cancel_requests (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  order_id BIGINT UNSIGNED NOT NULL,
+  user_id INT NOT NULL,
+  reason VARCHAR(300) NOT NULL,
+  status ENUM('PENDING','APPROVED','DECLINED') NOT NULL DEFAULT 'PENDING',
+  admin_note VARCHAR(300) NOT NULL DEFAULT '',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  resolved_at DATETIME NULL,
+  resolved_by INT NULL,
+  UNIQUE KEY uniq_cancel_request_order (order_id),
+  INDEX idx_cancel_status_time (status,created_at),
+  CONSTRAINT fk_banhang_cancel_request_order FOREIGN KEY (order_id) REFERENCES tbl_orders(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Inventory movement ledger (shared product-level stock at tbl_sanpham.soluong).
 CREATE TABLE IF NOT EXISTS tbl_inventory_movements (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
