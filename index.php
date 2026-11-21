@@ -137,7 +137,7 @@ try {
             case 'customer_cancel_order':
                 $user=require_customer();
                 $code=trim((string)($_POST['order_code']??''));
-                $result=customer_cancel_order($code,(int)$user['id_dangky'],(string)($_POST['cancel_reason']??''));
+                $result=customer_cancel_order($code,(int)$user['id_dangky'],(string)($_POST['cancel_reason']??''),(string)($_POST['not_transferred']??'')==='1');
                 notice($result==='CANCELLED'
                     ? 'Đơn hàng đã hủy thành công, tồn kho đã được hoàn lại.'
                     : 'Đã gửi yêu cầu hủy tới cửa hàng. Đơn vẫn đang chờ xét duyệt.','success');
