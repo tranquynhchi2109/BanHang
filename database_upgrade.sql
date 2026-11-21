@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS v2_settings (
  setting_value VARCHAR(400) NOT NULL DEFAULT ''
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 INSERT IGNORE INTO v2_settings(setting_key, setting_value) VALUES
- ('store_name','BanHang Tech Store'),('support_email',''),('bank_id',''),('bank_account',''),('bank_name','');
+ ('store_name','BanHang Tech Store'),('support_email',''),('bank_id','970422'),('bank_account','0973258529'),('bank_name','');
 CREATE TABLE IF NOT EXISTS v2_login_attempts (
  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
  key_hash CHAR(64) NOT NULL,

@@ -315,19 +315,30 @@ function safe_image(string $filename, string $kind = 'product'): string
 }
 function setting(string $key, string $default = ''): string
 {
+    // Public recipient details only, never passwords or API credentials.
+    // Admin-configured non-empty values take precedence over these defaults.
+    $bankDefaults = [
+        'bank_id' => '970422',       // MB Bank (Napas BIN)
+        'bank_account' => '0973258529',
+    ];
+    if ($default === '' && isset($bankDefaults[$key])) $default = $bankDefaults[$key];
     $result = row('SELECT setting_value FROM v2_settings WHERE setting_key=?', [$key]);
-    return (string)($result['setting_value'] ?? $default);
+    $stored = (string)($result['setting_value'] ?? '');
+    return $stored !== '' ? $stored : $default;
 }
 function qr_link(array $order): ?string
 {
     $bank = setting('bank_id');
     $account = setting('bank_account');
     if (!preg_match('/^[A-Za-z0-9]{2,15}$/', $bank) || !preg_match('/^[0-9]{6,24}$/', $account)) return null;
-    $args = http_build_query([
+    $params = [
         'amount' => (int)$order['total_amount'],
         'addInfo' => 'BANHANG ' . $order['order_code'],
-        'accountName' => setting('bank_name'),
-    ], '', '&', PHP_QUERY_RFC3986);
+    ];
+    // VietQR accepts accountName as optional; never invent the beneficiary name.
+    $accountName = trim(setting('bank_name'));
+    if ($accountName !== '') $params['accountName'] = $accountName;
+    $args = http_build_query($params, '', '&', PHP_QUERY_RFC3986);
     return 'https://img.vietqr.io/image/' . rawurlencode($bank) . '-' . rawurlencode($account) . '-compact2.png?' . $args;
 }
 function selected(string $actual, string $target): string

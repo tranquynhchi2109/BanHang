@@ -188,8 +188,14 @@ elseif ($page==='orders' || $page==='order') {
             if ($order['payment_method']==='BANK' && $order['payment_status']==='UNPAID' && $order['order_status']!=='CANCELLED') {
                 $qr=qr_link($order);
                 if ($qr) {
-                    echo '<img class="payment-qr" src="'.h($qr).'" alt="Mã QR chuyển khoản theo đơn hàng"><p>Chuyển khoản đúng số tiền và nội dung <strong>BANHANG '.h($order['order_code']).'</strong>.</p>';
-                    echo '<p class="hint">Cửa hàng sẽ kiểm tra giao dịch và xác nhận thủ công. Quét QR không đồng nghĩa đơn đã thanh toán.</p>';
+                    $bankId = setting('bank_id');
+                    $bankLabel = in_array(strtoupper($bankId), ['970422','MB','MBBANK'], true) ? 'MB Bank (Ngân hàng Quân đội)' : $bankId;
+                    echo '<img class="payment-qr" src="'.h($qr).'" alt="Mã QR chuyển khoản theo đơn hàng">';
+                    echo '<p>Ngân hàng: <strong>'.h($bankLabel).'</strong></p>';
+                    echo '<p>Số tài khoản: <strong>'.h(setting('bank_account')).'</strong></p>';
+                    if (trim(setting('bank_name')) !== '') echo '<p>Chủ tài khoản: <strong>'.h(setting('bank_name')).'</strong></p>';
+                    echo '<p>Chuyển khoản đúng số tiền và nội dung <strong>BANHANG '.h($order['order_code']).'</strong>.</p>';
+                    echo '<p class="hint">Hãy kiểm tra tên người nhận trong ứng dụng ngân hàng trước khi chuyển. Cửa hàng đối soát thủ công; quét QR không đồng nghĩa đơn đã thanh toán.</p>';
                 } else echo '<p>Chưa cấu hình tài khoản nhận chuyển khoản.</p>';
             }
             echo '</aside></div>';

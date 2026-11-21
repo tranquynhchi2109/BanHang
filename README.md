@@ -21,7 +21,9 @@ This rebuild keeps the existing project folders and entry points:
 6. In phpMyAdmin, select the existing `web_mysqli` database and run `database_upgrade.sql`. The migration adds `v2_*` tables and does not drop or rewrite the legacy tables.
 7. Open `http://localhost/<project-folder>/index.php` and `http://localhost/<project-folder>/admin/index.php`.
 8. Log in to the admin using the existing admin account. The seeded demo account in a fresh sample dump is `admin` / `123456`; change it before any public deployment.
-9. In Admin > Cấu hình, set the real bank BIN/short code, account number and account holder to enable VietQR. Do not commit these details.
+9. The default VietQR recipient is MB Bank (BIN `970422`), account `0973258529`, as supplied by the store owner. Do not assume the beneficiary name: set `bank_name` to the verified name in Admin > Cấu hình.
+10. On an existing installation with an earlier non-empty recipient configured in `v2_settings`, run `bank_config_mbbank.sql` once in phpMyAdmin (after a backup), or change the bank fields in Admin > Cấu hình. Existing non-empty admin settings intentionally override application defaults.
+11. Before accepting a real payment, verify in your banking app that the QR resolves to the intended MB account and beneficiary name. VietQR does not automatically mark an order as paid.
 
 ## Security and behaviour
 - PDO native prepared statements, output escaping, CSRF tokens on state-changing forms, strict HttpOnly/SameSite session cookies and session ID rotation.

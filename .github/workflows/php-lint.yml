@@ -47,3 +47,6 @@ jobs:
           mysql -h 127.0.0.1 -uroot < web_mysqli.sql
           mysql -h 127.0.0.1 -uroot web_mysqli < database_upgrade.sql
           mysql -h 127.0.0.1 -uroot web_mysqli -e "SHOW COLUMNS FROM v2_order_items LIKE 'variant_label';"
+          mysql -h 127.0.0.1 -uroot web_mysqli < bank_config_mbbank.sql
+          test "$(mysql -h 127.0.0.1 -uroot -N -s web_mysqli -e "SELECT setting_value FROM v2_settings WHERE setting_key='bank_id'")" = '970422'
+          test "$(mysql -h 127.0.0.1 -uroot -N -s web_mysqli -e "SELECT setting_value FROM v2_settings WHERE setting_key='bank_account'")" = '0973258529'
