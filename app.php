@@ -179,14 +179,38 @@ function parse_cart_key(string|int $key): array
     if (!in_array($variant, ['BASE','128GB','256GB','512GB','1TB'], true)) $variant = 'BASE';
     return [$productId, $variant];
 }
-function variant_price(array $product, string $variant = 'BASE'): int
+function is_phone_product(array $product): bool
+{
+    return mb_stripos((string)($product['tendanhmuc'] ?? ''), 'điện thoại') !== false;
+}
+function available_variants(int $productId): array
+{
+    $items = rows('SELECT variant_code,price FROM tbl_product_variants WHERE product_id=? AND is_active=1 AND price>0', [$productId]);
+    $result = [];
+    foreach ($items as $item) $result[(string)$item['variant_code']] = (int)$item['price'];
+    return $result;
+}
+/**
+ * One authoritative price for listing, product detail, cart and checkout.
+ * Never compute synthetic capacity uplifts from the base product price.
+ */
+function variant_price(array $product, string $variant = 'BASE', bool $lock = false): int
 {
     $base = (int)($product['giasp'] ?? 0);
-    if (($product['tendanhmuc'] ?? '') !== 'Điện thoại') return $base;
+    if (!is_phone_product($product)) {
+        if ($variant !== 'BASE') throw new DomainException('Phiên bản sản phẩm không hợp lệ.');
+        if ($base<=0) throw new DomainException('Sản phẩm chưa có giá bán.');
+        return $base;
+    }
     if ($variant === 'BASE') $variant = '128GB';
-    $extras = ['128GB'=>0, '256GB'=>2000000, '512GB'=>5000000, '1TB'=>10000000];
-    if (!array_key_exists($variant, $extras)) throw new DomainException('Vui lòng chọn dung lượng hợp lệ.');
-    return $base + $extras[$variant];
+    if (!in_array($variant, ['128GB','256GB','512GB','1TB'], true)) {
+        throw new DomainException('Dung lượng sản phẩm không hợp lệ.');
+    }
+    $sql = 'SELECT price FROM tbl_product_variants WHERE product_id=? AND variant_code=? AND is_active=1 AND price>0';
+    if ($lock) $sql .= ' FOR UPDATE';
+    $priceRow = row($sql, [(int)$product['id_sanpham'], $variant]);
+    if (!$priceRow) throw new DomainException('Dung lượng ' . $variant . ' chưa có giá bán được xác nhận. Vui lòng chọn dung lượng khác.');
+    return (int)$priceRow['price'];
 }
 function cart_product_quantity(array $cart, int $productId, string $excludeKey = ''): int
 {
@@ -375,13 +399,18 @@ function page_foot(bool $admin = false): void
 function product_card(array $product): void
 {
     $id = (int)$product['id_sanpham'];
-    $variant = (($product['tendanhmuc'] ?? '') === 'Điện thoại') ? '128GB' : 'BASE';
-    $price = variant_price($product, $variant);
+    $variant = is_phone_product($product) ? '128GB' : 'BASE';
+    $price = null;
+    try { $price = variant_price($product, $variant); } catch (DomainException $e) {}
     echo '<article class="product-card"><a class="product-card__image" href="' . link_to('product', ['id' => $id]) . '"><img loading="lazy" src="' . h(safe_image($product['hinhanh'])) . '" alt="' . h($product['tensanpham']) . '"></a>';
     echo '<p class="product-card__cat">' . h($product['tendanhmuc'] ?? 'Công nghệ') . '</p><h3><a href="' . link_to('product', ['id' => $id]) . '">' . h($product['tensanpham']) . '</a></h3>';
-    echo '<p class="rating">★ 4.9 <span>· Sản phẩm chính hãng</span></p><div class="product-card__bottom"><strong>' . money($price) . '</strong>';
-    echo '<form action="' . h(project_url('index.php')) . '" method="post">' . csrf_field() . '<input type="hidden" name="action" value="add_cart"><input type="hidden" name="product_id" value="' . $id . '"><input type="hidden" name="variant" value="' . h($variant) . '"><input type="hidden" name="qty" value="1">';
-    echo '<button type="submit" class="icon-button" aria-label="Thêm vào giỏ">＋</button></form></div></article>';
+    echo '<p class="rating">★ 4.9 <span>· Sản phẩm chính hãng</span></p><div class="product-card__bottom">';
+    echo '<strong>' . ($price === null ? 'Chưa có giá' : money($price)) . '</strong>';
+    if ($price !== null && (int)$product['soluong'] > 0) {
+        echo '<form action="' . h(project_url('index.php')) . '" method="post">' . csrf_field() . '<input type="hidden" name="action" value="add_cart"><input type="hidden" name="product_id" value="' . $id . '"><input type="hidden" name="variant" value="' . h($variant) . '"><input type="hidden" name="qty" value="1">';
+        echo '<button type="submit" class="icon-button" aria-label="Thêm vào giỏ">＋</button></form>';
+    }
+    echo '</div></article>';
 }
 function form_error(?string $error): void
 {

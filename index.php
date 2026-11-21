@@ -28,13 +28,15 @@ try {
             case 'add_cart':
                 $id=as_int($_POST['product_id'] ?? 0);
                 $qty=as_int($_POST['qty'] ?? 1,1,20);
-                $p=row('SELECT p.id_sanpham,p.soluong,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.id_sanpham=? AND p.tinhtrang=1',[$id]);
+                $p=row('SELECT p.id_sanpham,p.giasp,p.soluong,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.id_sanpham=? AND p.tinhtrang=1',[$id]);
                 if (!$p || (int)$p['soluong']<1) throw new DomainException('Sản phẩm đã hết hàng.');
                 $variant=strtoupper(trim((string)($_POST['variant']??'BASE')));
                 if ($p['tendanhmuc']==='Điện thoại' && !in_array($variant,['128GB','256GB','512GB','1TB'],true)) {
                     throw new DomainException('Vui lòng chọn dung lượng hợp lệ.');
                 }
-                if ($p['tendanhmuc']!=='Điện thoại') $variant='BASE';
+                if (!is_phone_product($p)) $variant='BASE';
+                // Enforce an approved DB price before adding a capacity to cart.
+                variant_price($p,$variant);
                 $key=cart_key($id,$variant);
                 $cart=$_SESSION['cart']??[];
                 $already=cart_product_quantity($cart,$id);
@@ -153,8 +155,8 @@ try {
                     foreach ($entries as &$entry) {
                         $product=$productMap[$entry['id']]??null;
                         if (!$product) throw new DomainException('Sản phẩm không còn tồn tại.');
-                        if ($product['tendanhmuc']==='Điện thoại' && $entry['variant']==='BASE') $entry['variant']='128GB';
-                        if ($product['tendanhmuc']!=='Điện thoại') $entry['variant']='BASE';
+                        if (is_phone_product($product) && $entry['variant']==='BASE') $entry['variant']='128GB';
+                        if (!is_phone_product($product)) $entry['variant']='BASE';
                     }
                     unset($entry);
                     foreach ($requested as $id=>$quantity) {
@@ -167,11 +169,15 @@ try {
                     $lines=[];
                     foreach ($entries as $entry) {
                         $product=$productMap[$entry['id']];
-                        $price=variant_price($product,$entry['variant']);
+                        $price=variant_price($product,$entry['variant'],true);
                         if ($price<=0) throw new DomainException('Giá sản phẩm không hợp lệ.');
                         $total+=$price*$entry['qty'];
                         if ($total>1000000000000) throw new DomainException('Giá trị đơn hàng vượt giới hạn.');
                         $lines[]=['id'=>$entry['id'],'name'=>$product['tensanpham'],'variant'=>$entry['variant'],'price'=>$price,'qty'=>$entry['qty']];
+                    }
+                    $expectedTotal=filter_var($_POST['expected_total']??null,FILTER_VALIDATE_INT);
+                    if ($expectedTotal===false || $expectedTotal!==$total) {
+                        throw new DomainException('Giá hoặc tổng tiền đã thay đổi. Vui lòng kiểm tra lại giỏ hàng trước khi đặt.');
                     }
                     $code='BH'.strtoupper(bin2hex(random_bytes(6)));
                     run('INSERT INTO tbl_orders(order_code,user_id,customer_name,phone,delivery_address,note,total_amount,payment_method)
@@ -227,8 +233,7 @@ function select_cart_items(): array
 {
     $cart=$_SESSION['cart']??[];
     if (!$cart) return [];
-    $entries=[];
-    $ids=[];
+    $entries=[];$ids=[];
     foreach ($cart as $key=>$quantity) {
         [$id,$variant]=parse_cart_key((string)$key);
         if ($id<1 || (int)$quantity<1) continue;
@@ -241,18 +246,27 @@ function select_cart_items(): array
     $products=rows('SELECT p.id_sanpham,p.tensanpham,p.giasp,p.hinhanh,p.soluong,c.tendanhmuc
                     FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc
                     WHERE p.id_sanpham IN ('.$placeholders.')',$idList);
-    $map=[];
-    foreach ($products as $product) $map[(int)$product['id_sanpham']]=$product;
+    $map=[];foreach ($products as $product) $map[(int)$product['id_sanpham']]=$product;
     $items=[];
     foreach ($entries as $entry) {
         if (!isset($map[$entry['id']])) continue;
         $item=$map[$entry['id']];
+        $variant=$entry['variant'];
+        if (is_phone_product($item) && $variant==='BASE') $variant='128GB';
+        if (!is_phone_product($item)) $variant='BASE';
         $item['cart_key']=$entry['key'];
-        $item['variant']=$entry['variant'];
-        $item['variant_label']=$entry['variant']==='BASE'?'':$entry['variant'];
+        $item['variant']=$variant;
+        $item['variant_label']=$variant==='BASE'?'':$variant;
         $item['cart_qty']=$entry['qty'];
-        $item['cart_unit_price']=variant_price($item,$entry['variant']);
-        $item['cart_total']=$item['cart_qty']*$item['cart_unit_price'];
+        $item['cart_price_error']=false;
+        try {
+            $item['cart_unit_price']=variant_price($item,$variant);
+            $item['cart_total']=$item['cart_qty']*$item['cart_unit_price'];
+        } catch (DomainException $e) {
+            $item['cart_price_error']=true;
+            $item['cart_unit_price']=null;
+            $item['cart_total']=0;
+        }
         $items[]=$item;
     }
     return $items;
