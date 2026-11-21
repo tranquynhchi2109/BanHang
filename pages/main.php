@@ -406,6 +406,8 @@ elseif ($page==='orders' || $page==='order') {
                 echo '<p>Cửa hàng đã xác nhận nhận đủ tiền thanh toán cho đơn hàng này.</p>';
                 if (!empty($order['cod_paid_at'])) echo '<small>Xác nhận lúc: '.h($order['cod_paid_at']).'</small>';
                 echo '</div>';
+            } elseif ($order['payment_method']==='BANK' && $order['payment_status']==='UNPAID' && $curStatus!=='CANCELLED' && $cancelRequest && $cancelRequest['status']==='PENDING') {
+                echo '<div class="payment-alert"><strong>Yêu cầu hủy đang chờ Admin duyệt</strong><p>Vui lòng không chuyển khoản thêm trong thời gian chờ. Nếu đã chuyển tiền, hãy liên hệ cửa hàng để đối soát và xử lý.</p></div>';
             } elseif ($order['payment_method']==='BANK' && $order['payment_status']==='UNPAID' && $curStatus!=='CANCELLED') {
                 $snapshot = order_payment_snapshot((int)$order['id']);
                 $qr = $snapshot ? qr_link($order, $snapshot) : null;
