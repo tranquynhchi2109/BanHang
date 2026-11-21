@@ -212,6 +212,23 @@ elseif ($page==='orders' || $page==='order') {
                     echo '<p>Chuyển khoản đúng số tiền và nội dung <strong>BANHANG '.h($order['order_code']).'</strong>.</p>';
                     echo '<p class="hint">Hãy kiểm tra tên người nhận trong ứng dụng ngân hàng trước khi chuyển. Cửa hàng đối soát thủ công; quét QR không đồng nghĩa đơn đã thanh toán.</p>';
                 } else echo '<p>Chưa cấu hình tài khoản nhận chuyển khoản.</p>';
+                if ($order['payment_review_status']==='REPORTED') {
+                    echo '<div class="payment-status-note"><strong>Đã báo chuyển khoản – đang chờ đối soát</strong>';
+                    echo '<p>Đây chưa phải xác nhận nhận tiền. Cửa hàng sẽ kiểm tra trực tiếp ứng dụng MB Bank.</p>';
+                    if ($order['payment_reported_at']) echo '<small>Đã báo lúc '.h($order['payment_reported_at']).'</small>';
+                    echo '</div>';
+                } else {
+                    if ($order['payment_review_status']==='REJECTED')
+                        echo '<p class="payment-alert">Cửa hàng chưa tìm thấy giao dịch khớp. Vui lòng kiểm tra lại MB Bank và gửi thông báo lần nữa.</p>';
+                    echo '<form method="post" action="'.h(project_url('index.php')).'" class="payment-report-form">'.csrf_field();
+                    echo '<input type="hidden" name="action" value="report_bank_transfer"><input type="hidden" name="order_code" value="'.h($order['order_code']).'">';
+                    echo '<label class="field-group">Ghi chú chuyển khoản (không bắt buộc)<input class="field" name="transfer_note" maxlength="200" placeholder="Ví dụ: 4 số cuối mã giao dịch"></label>';
+                    echo '<button type="submit" class="button full" data-confirm="Chỉ báo sau khi bạn thực sự đã chuyển khoản. Tiếp tục?">Tôi đã chuyển khoản – gửi kiểm tra</button>';
+                    echo '<p class="hint">Nút này KHÔNG tự xác nhận đã nhận tiền. Không gửi mật khẩu, OTP hoặc mã PIN ngân hàng.</p></form>';
+                }
+            }
+            if ($order['payment_method']==='BANK' && $order['payment_status']==='PAID') {
+                echo '<div class="payment-status-note"><strong>Đã được Admin đối soát và xác nhận nhận tiền.</strong></div>';
             }
             echo '</aside></div>';
         }

@@ -117,6 +117,13 @@ try {
                 $_SESSION['csrf']=bin2hex(random_bytes(32));
                 notice('Đổi mật khẩu thành công.','success');
                 redirect_to(link_to('account'));
+            case 'report_bank_transfer':
+                $user=require_customer();
+                $code=trim((string)($_POST['order_code']??''));
+                if ($code==='') throw new DomainException('Thiếu mã đơn hàng.');
+                report_bank_transfer($code,(int)$user['id_dangky'],(string)($_POST['transfer_note']??''));
+                notice('Đã nhận thông báo. Cửa hàng sẽ kiểm tra giao dịch MB Bank; đơn vẫn CHƯA được xác nhận thanh toán.','success');
+                redirect_to(link_to('order',['code'=>$code]));
             case 'checkout':
                 $user=require_customer();
                 $cart=$_SESSION['cart']??[];
@@ -207,6 +214,9 @@ try {
     }
 } catch (DomainException $e) {
     notice($e->getMessage(),'danger');
+    if ((string)($_POST['action']??'')==='report_bank_transfer') {
+        redirect_to(link_to('order',['code'=>trim((string)($_POST['order_code']??''))]));
+    }
     $target=match ((string)($_POST['action']??'')) {
         'login'=>'login','register'=>'register','profile'=>'account','password'=>'password','checkout'=>'checkout',
         default=>'cart'
