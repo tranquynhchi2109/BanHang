@@ -925,7 +925,7 @@ function customer_order_action_options(array $order): array
  * All stock, history, notifications and email updates commit atomically.
  * If review is needed, create exactly one pending request instead of cancelling.
  */
-function customer_cancel_order(string $code, int $customerId, string $reason): string
+function customer_cancel_order(string $code, int $customerId, string $reason, bool $confirmedNoTransfer = false): string
 {
     $code = trim($code);
     $reason = trim($reason);
@@ -946,6 +946,9 @@ function customer_cancel_order(string $code, int $customerId, string $reason): s
         }
 
         if ($options['can_cancel']) {
+            if ($order['payment_method']==='BANK' && !$confirmedNoTransfer) {
+                throw new DomainException('Bạn cần xác nhận chưa chuyển khoản trước khi tự hủy đơn VietQR. Nếu đã chuyển, vui lòng liên hệ cửa hàng.');
+            }
             $items = rows('SELECT product_id,quantity FROM tbl_order_items WHERE order_id=? ORDER BY product_id ASC', [$orderId]);
             $restore = [];
             foreach ($items as $item) {
