@@ -144,7 +144,7 @@ try {
                 $next=(string)($_POST['status']??'');
                 db()->beginTransaction();
                 try {
-                    $order=row('SELECT id,order_status,payment_status FROM tbl_orders WHERE id=? FOR UPDATE',[$id]);
+                    $order=row('SELECT id,order_status,payment_status,payment_method,payment_review_status FROM tbl_orders WHERE id=? FOR UPDATE',[$id]);
                     if (!$order) throw new DomainException('Không tìm thấy đơn hàng.');
                     $transitions=[
                         'PENDING'=>['CONFIRMED','CANCELLED'],
@@ -154,8 +154,11 @@ try {
                         'CANCELLED'=>[],
                     ];
                     if (!in_array($next,$transitions[$order['order_status']]??[],true)) throw new DomainException('Chuyển trạng thái đơn hàng không được phép.');
+                    if ($order['payment_method']==='BANK' && $order['payment_status']!=='PAID' && in_array($next,['CONFIRMED','SHIPPING','COMPLETED'],true))
+                        throw new DomainException('Đơn BANK phải được xác nhận đã nhận tiền trước khi xác nhận/giao hàng.');
                     if ($next==='CANCELLED') {
                         if ($order['payment_status']==='PAID') throw new DomainException('Đơn đã thanh toán cần xử lý hoàn tiền thủ công trước khi hủy.');
+                        if ($order['payment_review_status']==='REPORTED') throw new DomainException('Khách đã báo chuyển tiền. Phải đối soát trước khi hủy.');
                         $items=rows('SELECT product_id,quantity FROM tbl_order_items WHERE order_id=?',[$id]);
                         foreach ($items as $item) {
                             run('UPDATE tbl_sanpham SET soluong=soluong+? WHERE id_sanpham=?',[(int)$item['quantity'],(int)$item['product_id']]);
@@ -170,11 +173,25 @@ try {
                 notice('Đã cập nhật trạng thái đơn hàng.','success');
                 redirect_to(admin_to('order',['id'=>$id]));
             case 'mark_paid':
+                $adminUser=require_admin();
+                if ((string)($_POST['verified_receipt']??'')!=='1')
+                    throw new DomainException('Bạn phải xác nhận đã kiểm tra giao dịch tiền vào trên MB Bank.');
                 $id=as_int($_POST['id']??0);
-                $changed=run("UPDATE tbl_orders SET payment_status='PAID'
-                    WHERE id=? AND payment_method='BANK' AND payment_status='UNPAID' AND order_status<>'CANCELLED'",[$id]);
-                if ($changed!==1) throw new DomainException('Đơn không hợp lệ hoặc đã được xác nhận.');
-                notice('Đã ghi nhận thanh toán do quản trị viên xác nhận.','success');
+                $amount=as_int($_POST['received_amount']??0,1,1000000000000);
+                confirm_bank_transfer($id,(int)$adminUser['id_admin'],(string)($_POST['bank_reference']??''),$amount);
+                notice('Đã xác nhận nhận đủ tiền qua MB Bank. Nhật ký đối soát đã lưu.','success');
+                redirect_to(admin_to('order',['id'=>$id]));
+            case 'reject_bank_report':
+                $adminUser=require_admin();
+                $id=as_int($_POST['id']??0);
+                reject_bank_report($id,(int)$adminUser['id_admin'],(string)($_POST['reason']??''));
+                notice('Đã báo cần đối soát lại. Đơn hàng vẫn UNPAID.','success');
+                redirect_to(admin_to('order',['id'=>$id]));
+            case 'expire_unpaid':
+                $adminUser=require_admin();
+                $id=as_int($_POST['id']??0);
+                expire_unpaid_bank_order($id,(int)$adminUser['id_admin']);
+                notice('Đã hủy thủ công đơn BANK quá 24 giờ và hoàn tồn kho.','success');
                 redirect_to(admin_to('order',['id'=>$id]));
             case 'save_settings':
                 $values=[
@@ -223,7 +240,7 @@ try {
     notice($e->getMessage(),'danger');
     $target=match((string)($_POST['action']??'')) {
         'login_admin'=>'login','save_product'=>'product_form','save_category'=>'categories',
-        'order_status','mark_paid'=>'orders','legacy_order_seen'=>'legacy_order','save_settings'=>'settings','save_article'=>'article_form',
+        'order_status','mark_paid','reject_bank_report','expire_unpaid'=>'orders','legacy_order_seen'=>'legacy_order','save_settings'=>'settings','save_article'=>'article_form',
         default=>'dashboard'
     };
     redirect_to(admin_to($target));
@@ -376,7 +393,18 @@ elseif ($page==='orders' || $page==='payments') {
         $page==='orders'?'Xác nhận đơn và theo dõi các bước vận chuyển.':'Xác nhận thanh toán sau khi đối chiếu giao dịch ngân hàng.');
     $status=(string)($_GET['status']??'');
     $params=[];$where='';
-    if ($page==='payments') $where=' WHERE payment_method=\'BANK\'';
+    if ($page==='payments') {
+        $where=" WHERE payment_method='BANK'";
+        $review=(string)($_GET['review']??'');
+        if (in_array($review,['REPORTED','NONE','REJECTED','VERIFIED'],true)) {
+            $where.=' AND payment_review_status=?';
+            $params[]=$review;
+        }
+        echo '<nav class="filter-tabs"><a href="'.admin_to('payments').'">Tất cả</a> ';
+        foreach (['REPORTED'=>'Chờ đối soát','NONE'=>'Chưa báo','REJECTED'=>'Cần kiểm tra lại','VERIFIED'=>'Đã xác nhận'] as $key=>$label)
+            echo '<a href="'.admin_to('payments',['review'=>$key]).'">'.h($label).'</a>';
+        echo '</nav>';
+    }
     elseif ($status!=='' && in_array($status,['PENDING','CONFIRMED','SHIPPING','COMPLETED','CANCELLED'],true)) {
         $where=' WHERE order_status=?';$params=[$status];
     }
@@ -384,9 +412,10 @@ elseif ($page==='orders' || $page==='payments') {
     foreach ([''=>'Tất cả','PENDING'=>'Chờ xác nhận','CONFIRMED'=>'Đã xác nhận','SHIPPING'=>'Đang giao','COMPLETED'=>'Hoàn thành','CANCELLED'=>'Đã hủy'] as $k=>$label)
         echo '<a class="'.($status===$k?'active':'').'" href="'.admin_to('orders',['status'=>$k]).'">'.h($label).'</a>';
     echo '</div>';
-    admin_table_start(['Mã đơn','Khách hàng','Ngày','Tổng tiền','Phương thức','Thanh toán','Trạng thái']);
-    foreach (rows('SELECT id,order_code,customer_name,created_at,total_amount,payment_method,payment_status,order_status FROM tbl_orders'.$where.' ORDER BY id DESC LIMIT 100',$params) as $o) {
-        echo '<tr><td><a class="link-blue" href="'.admin_to('order',['id'=>$o['id']]).'">'.h($o['order_code']).'</a></td><td>'.h($o['customer_name']).'</td><td>'.h($o['created_at']).'</td><td>'.money((int)$o['total_amount']).'</td><td>'.h($o['payment_method']).'</td><td>'.h($o['payment_status']).'</td><td><span class="badge">'.h($o['order_status']).'</span></td></tr>';
+    admin_table_start(['Mã đơn','Khách hàng','Ngày','Tổng tiền','Phương thức','Thanh toán','Đối soát','Trạng thái']);
+    foreach (rows('SELECT id,order_code,customer_name,created_at,total_amount,payment_method,payment_status,payment_review_status,order_status FROM tbl_orders'.$where.' ORDER BY id DESC LIMIT 100',$params) as $o) {
+        $label=['NONE'=>'Chưa báo','REPORTED'=>'Chờ đối soát','REJECTED'=>'Cần kiểm tra lại','VERIFIED'=>'Đã đối soát'][$o['payment_review_status']]??$o['payment_review_status'];
+        echo '<tr><td><a class="link-blue" href="'.admin_to('order',['id'=>$o['id']]).'">'.h($o['order_code']).'</a></td><td>'.h($o['customer_name']).'</td><td>'.h($o['created_at']).'</td><td>'.money((int)$o['total_amount']).'</td><td>'.h($o['payment_method']).'</td><td>'.h($o['payment_status']).'</td><td>'.h($label).'</td><td><span class="badge">'.h($o['order_status']).'</span></td></tr>';
     }
     admin_table_end();
     if ($page==='orders') {
@@ -405,7 +434,7 @@ elseif ($page==='orders' || $page==='payments') {
 }
 elseif ($page==='order') {
     $id=as_int($_GET['id']??0);
-    $order=row('SELECT * FROM tbl_orders WHERE id=?',[$id]);
+    $order=row('SELECT *, (created_at < NOW() - INTERVAL 24 HOUR) AS past_deadline FROM tbl_orders WHERE id=?',[$id]);
     if (!$order) throw new DomainException('Đơn hàng không tồn tại.');
     admin_title('Đơn hàng '. $order['order_code'],'Kiểm tra thông tin và cập nhật trạng thái.');
     echo '<div class="admin-grid"><div class="surface"><h2>Thông tin đơn hàng</h2><p>Khách hàng: <strong>'.h($order['customer_name']).'</strong></p><p>SĐT: '.h($order['phone']).'</p><p>Địa chỉ: '.h($order['delivery_address']).'</p><p>Ghi chú: '.h($order['note']).'</p><p>Ngày đặt: '.h($order['created_at']).'</p><hr><h3>Sản phẩm</h3>';
@@ -416,7 +445,8 @@ elseif ($page==='order') {
     echo '<div class="surface"><h2>Trạng thái xử lý</h2><p><span class="badge">'.h($order['order_status']).'</span></p><p>Thanh toán: <strong>'.h($order['payment_method']).' / '.h($order['payment_status']).'</strong></p>';
     $transitions=['PENDING'=>['CONFIRMED'=>'Xác nhận','CANCELLED'=>'Hủy đơn'],'CONFIRMED'=>['SHIPPING'=>'Bắt đầu giao','CANCELLED'=>'Hủy đơn'],'SHIPPING'=>['COMPLETED'=>'Đã giao'], 'COMPLETED'=>[], 'CANCELLED'=>[]];
     foreach ($transitions[$order['order_status']]??[] as $status=>$label) {
-        if ($status==='CANCELLED' && $order['payment_status']==='PAID') continue;
+        if ($status==='CANCELLED' && ($order['payment_status']==='PAID' || $order['payment_review_status']==='REPORTED')) continue;
+        if ($order['payment_method']==='BANK' && $order['payment_status']!=='PAID' && $status!=='CANCELLED') continue;
         echo '<form method="post" class="inline-form">'.csrf_field().'<input type="hidden" name="action" value="order_status"><input type="hidden" name="id" value="'.$id.'"><input type="hidden" name="status" value="'.h($status).'"><button class="button '.($status==='CANCELLED'?'button--danger':'button--light').'" '.($status==='CANCELLED'?'data-confirm="Hủy đơn và hoàn lại tồn kho?"':'').'>'.h($label).'</button></form>';
     }
     if ($order['payment_method']==='BANK' && $order['payment_status']==='UNPAID' && $order['order_status']!=='CANCELLED')
