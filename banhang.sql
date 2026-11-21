@@ -180,6 +180,47 @@ INSERT INTO tbl_settings(setting_key,setting_value)
 VALUES ('bank_id','970422'),('bank_account','0973258529')
 ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value);
 
+
+-- Manually reconciled VietQR payments. Idempotent MariaDB 10.4+/MySQL 8 updates.
+-- Never mark legacy/unverified orders PAID in the migration.
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND COLUMN_NAME='payment_review_status');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_orders ADD COLUMN payment_review_status ENUM(''NONE'',''REPORTED'',''REJECTED'',''VERIFIED'') NOT NULL DEFAULT ''NONE''','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND COLUMN_NAME='payment_reported_at');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_orders ADD COLUMN payment_reported_at DATETIME NULL','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND COLUMN_NAME='customer_transfer_note');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_orders ADD COLUMN customer_transfer_note VARCHAR(200) NULL','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND COLUMN_NAME='bank_reference');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_orders ADD COLUMN bank_reference VARCHAR(120) NULL','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND COLUMN_NAME='payment_verified_at');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_orders ADD COLUMN payment_verified_at DATETIME NULL','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND COLUMN_NAME='payment_verified_by');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_orders ADD COLUMN payment_verified_by INT NULL','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+
+SET @bh_index_exists=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND INDEX_NAME='uniq_bank_reference');
+SET @bh_index_sql=IF(@bh_index_exists=0,
+  'ALTER TABLE tbl_orders ADD UNIQUE KEY uniq_bank_reference (bank_reference)','SELECT 1');
+PREPARE bh_idx FROM @bh_index_sql; EXECUTE bh_idx; DEALLOCATE PREPARE bh_idx;
+
+CREATE TABLE IF NOT EXISTS tbl_payment_events (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  order_id BIGINT UNSIGNED NOT NULL,
+  event_type ENUM('CUSTOMER_REPORTED','ADMIN_CONFIRMED','ADMIN_REJECTED','ADMIN_EXPIRED') NOT NULL,
+  actor_type ENUM('CUSTOMER','ADMIN') NOT NULL,
+  actor_id INT NOT NULL,
+  detail VARCHAR(500) NOT NULL DEFAULT '',
+  reference_code VARCHAR(120) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_order_events (order_id,created_at),
+  CONSTRAINT fk_banhang_payment_events_order FOREIGN KEY (order_id) REFERENCES tbl_orders(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SELECT 'tbl_sanpham' AS bang,COUNT(*) AS so_dong FROM tbl_sanpham
 UNION ALL SELECT 'tbl_orders',COUNT(*) FROM tbl_orders
 UNION ALL SELECT 'tbl_order_items',COUNT(*) FROM tbl_order_items

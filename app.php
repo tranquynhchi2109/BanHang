@@ -334,6 +334,122 @@ function login_admin(string $username, string $password): bool
  * from manufacturer/product pages. Those remote sources need an internet
  * connection; owners should replace them with licensed local uploads in Admin.
  */
+
+/**
+ * Manual bank transfer workflow. No bank API or browser proof confirms payment.
+ * Every mutation checks the owner/admin identity and locks the order row.
+ */
+function payment_event(int $orderId, string $event, string $actorType, int $actorId, string $detail = '', ?string $reference = null): void
+{
+    run('INSERT INTO tbl_payment_events(order_id,event_type,actor_type,actor_id,detail,reference_code)
+         VALUES (?,?,?,?,?,?)', [$orderId,$event,$actorType,$actorId,$detail,$reference]);
+}
+
+function report_bank_transfer(string $code, int $customerId, string $note): void
+{
+    $note=trim($note);
+    if (mb_strlen($note)>200 || preg_match('/[\x00-\x08\x0B-\x1F\x7F]/', $note)) {
+        throw new DomainException('Ghi chú chuyển khoản không hợp lệ (tối đa 200 ký tự).');
+    }
+    db()->beginTransaction();
+    try {
+        $order=row('SELECT id,payment_method,payment_status,payment_review_status,order_status
+                    FROM tbl_orders WHERE order_code=? AND user_id=? FOR UPDATE',[$code,$customerId]);
+        if (!$order) throw new DomainException('Không tìm thấy đơn hàng của bạn.');
+        if ($order['payment_method']!=='BANK' || $order['payment_status']!=='UNPAID'
+            || $order['order_status']==='CANCELLED') throw new DomainException('Đơn hàng không còn chờ chuyển khoản.');
+        if ($order['payment_review_status']==='REPORTED') throw new DomainException('Đơn hàng đã được báo chuyển khoản, cửa hàng đang đối soát.');
+        if ($order['payment_review_status']==='VERIFIED') throw new DomainException('Đơn hàng đã được xác nhận thanh toán.');
+        run("UPDATE tbl_orders SET payment_review_status='REPORTED', payment_reported_at=NOW(), customer_transfer_note=?
+             WHERE id=?",[$note,$order['id']]);
+        payment_event((int)$order['id'],'CUSTOMER_REPORTED','CUSTOMER',$customerId,$note);
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        throw $e;
+    }
+}
+
+function confirm_bank_transfer(int $orderId, int $adminId, string $reference, int $receivedAmount): void
+{
+    $reference=trim($reference);
+    if (mb_strlen($reference)<5 || mb_strlen($reference)>120
+        || preg_match('/[\x00-\x1F\x7F]/', $reference))
+        throw new DomainException('Nhập mã giao dịch MB Bank từ sao kê (5–120 ký tự).');
+    if ($receivedAmount<=0) throw new DomainException('Số tiền đối soát không hợp lệ.');
+    db()->beginTransaction();
+    try {
+        $order=row('SELECT id,total_amount,payment_method,payment_status,order_status
+                    FROM tbl_orders WHERE id=? FOR UPDATE',[$orderId]);
+        if (!$order || $order['payment_method']!=='BANK' || $order['payment_status']!=='UNPAID'
+            || $order['order_status']==='CANCELLED')
+            throw new DomainException('Không thể xác nhận đơn này hoặc đơn đã được thanh toán.');
+        if ((int)$order['total_amount']!==$receivedAmount)
+            throw new DomainException('Số tiền nhận thực tế khác tổng tiền đơn hàng. Không thể xác nhận.');
+        if (row('SELECT id FROM tbl_orders WHERE bank_reference=? LIMIT 1',[$reference]))
+            throw new DomainException('Mã giao dịch ngân hàng này đã được dùng cho một đơn khác.');
+        run("UPDATE tbl_orders SET payment_status='PAID',payment_review_status='VERIFIED',
+             payment_verified_at=NOW(),payment_verified_by=?,bank_reference=? WHERE id=?",
+             [$adminId,$reference,$orderId]);
+        payment_event($orderId,'ADMIN_CONFIRMED','ADMIN',$adminId,
+            'Admin đã đối soát đủ số tiền '.(string)$receivedAmount.' VND với sao kê MB Bank',$reference);
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        if ($e instanceof PDOException && (string)$e->getCode()==='23000')
+            throw new DomainException('Mã giao dịch đã được sử dụng. Kiểm tra sao kê và các đơn đã xác nhận.');
+        throw $e;
+    }
+}
+
+function reject_bank_report(int $orderId, int $adminId, string $reason): void
+{
+    $reason=trim($reason);
+    if (mb_strlen($reason)<5 || mb_strlen($reason)>300 || preg_match('/[\x00-\x1F\x7F]/',$reason))
+        throw new DomainException('Nhập lý do cần đối chiếu lại (5–300 ký tự).');
+    db()->beginTransaction();
+    try {
+        $order=row('SELECT id,payment_status,payment_method,order_status,payment_review_status
+                    FROM tbl_orders WHERE id=? FOR UPDATE',[$orderId]);
+        if (!$order || $order['payment_method']!=='BANK' || $order['payment_status']!=='UNPAID'
+            || $order['order_status']==='CANCELLED' || $order['payment_review_status']!=='REPORTED')
+            throw new DomainException('Không có báo cáo chuyển khoản đang chờ xem xét.');
+        run("UPDATE tbl_orders SET payment_review_status='REJECTED' WHERE id=?",[$orderId]);
+        payment_event($orderId,'ADMIN_REJECTED','ADMIN',$adminId,$reason);
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        throw $e;
+    }
+}
+
+function expire_unpaid_bank_order(int $orderId, int $adminId): void
+{
+    db()->beginTransaction();
+    try {
+        $order=row('SELECT id,payment_method,payment_status,payment_review_status,order_status,
+                    (created_at < NOW() - INTERVAL 24 HOUR) AS past_deadline
+                    FROM tbl_orders WHERE id=? FOR UPDATE',[$orderId]);
+        if (!$order || $order['payment_method']!=='BANK' || $order['payment_status']!=='UNPAID'
+            || $order['order_status']!=='PENDING' || !$order['past_deadline'])
+            throw new DomainException('Chỉ hủy thủ công đơn chuyển khoản chờ xử lý trên 24 giờ.');
+        if ($order['payment_review_status']==='REPORTED')
+            throw new DomainException('Khách đã báo chuyển khoản. Phải đối soát ngân hàng trước khi hủy.');
+        $items=rows('SELECT product_id,quantity FROM tbl_order_items WHERE order_id=?',[$orderId]);
+        foreach ($items as $item) {
+            run('UPDATE tbl_sanpham SET soluong=soluong+? WHERE id_sanpham=?',
+                [(int)$item['quantity'],(int)$item['product_id']]);
+        }
+        run("UPDATE tbl_orders SET order_status='CANCELLED' WHERE id=?",[$orderId]);
+        payment_event($orderId,'ADMIN_EXPIRED','ADMIN',$adminId,
+            'Hủy thủ công đơn chưa thanh toán quá 24 giờ; đã hoàn tồn kho.');
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        throw $e;
+    }
+}
+
 function safe_image(string $filename, string $kind = 'product'): string
 {
     $basename = basename(str_replace('\\', '/', trim($filename)));
