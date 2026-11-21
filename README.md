@@ -245,6 +245,18 @@ Khách chọn **COD** khi checkout. Việc giao hàng và việc **đã thu ti�
 > [!WARNING]
 > **QR, ảnh chụp giao dịch và nút "Tôi đã chuyển khoản" không phải bằng chứng ngân hàng đã nhận tiền.** Hệ thống không kết nối API MB Bank, không có webhook xác nhận tự động, không thu thông tin thẻ/CVV và không tự hoàn tiền.
 
+### ✋ Khách tự hủy đơn hoặc đổi phương thức thanh toán
+
+- **Trước khi xác nhận đặt hàng:** khách có thể quay lại giỏ, không có đơn mới được tạo.
+- **Đơn `PENDING` + `UNPAID`, chưa báo chuyển khoản:** khách có thể **tự hủy ngay** (phải chọn lý do). Với VietQR, khách phải xác nhận **chưa chuyển tiền**; hệ thống trả tồn kho **một lần**, lưu timeline, thông báo và email tùy chọn.
+- **Đổi COD ↔ VietQR:** chỉ cho phép khi còn `PENDING`, chưa thanh toán và chưa có lịch sử báo chuyển khoản. Khi đổi sang BANK lần đầu, tạo snapshot VietQR cố định trong `tbl_order_payment_details`.
+- **Đã báo chuyển khoản, đã thanh toán hoặc Admin đã xác nhận/đang chuẩn bị:** tạo **yêu cầu hủy** trong `tbl_order_cancel_requests` để Admin duyệt hoặc từ chối; không tự hủy, hoàn kho hay hoàn tiền.
+- **Admin:** tại Quản lý đơn hàng có đường dẫn lọc yêu cầu chờ duyệt, xem lý do và quyết định. Thao tác dùng database transaction và khóa đơn để chống xử lý trùng. Đơn đã thanh toán phải xử lý đối soát/hoàn tiền thủ công.
+- **Đơn đang giao/đã giao:** liên hệ cửa hàng để thực hiện quy trình hậu mãi, không tự hủy.
+
+> [!IMPORTANT]
+> **Cập nhật máy local:** backup database **trước**, import lại đúng `banhang.sql` vào database đang dùng (file SQL tạo thêm `tbl_order_cancel_requests`), rồi mới `git pull`. Nếu chỉ pull code mà chưa nâng cấp SQL, trang chi tiết đơn hàng có thể lỗi thiếu bảng. Các bài kiểm tra riêng nằm trong `tests/customer_order_actions.php` và chạy với database test cô lập.
+
 <a id="orders"></a>
 ## 📦 Vòng đời đơn hàng & thông báo
 
