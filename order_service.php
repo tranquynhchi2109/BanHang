@@ -892,3 +892,178 @@ function revenue_report_data(string $range = '30d'): array
         'missing_timestamp_total' => (int)($missingTs['total'] ?? 0),
     ];
 }
+
+
+/**
+ * Decide whether the current customer can cancel immediately or must ask Admin.
+ * This is presentation-only; every write rechecks the locked DB row.
+ */
+function customer_order_action_options(array $order): array
+{
+    $active = (string)$order['order_status'];
+    $unpaid = (string)$order['payment_status'] === 'UNPAID';
+    $reported = (string)$order['payment_review_status'] === 'REPORTED'
+        || !empty($order['payment_reported_at']);
+    $selfCancel = $active === 'PENDING' && $unpaid && !$reported;
+    return [
+        'can_cancel' => $selfCancel,
+        'can_change_payment' => $selfCancel,
+        'can_request_cancel' => !$selfCancel && in_array($active, ['PENDING','CONFIRMED','PREPARING'], true),
+    ];
+}
+
+/**
+ * Customer cancellation: only PENDING + UNPAID + never reported a transfer.
+ * All stock, history, notifications and email updates commit atomically.
+ * If review is needed, create exactly one pending request instead of cancelling.
+ */
+function customer_cancel_order(string $code, int $customerId, string $reason): string
+{
+    $code = trim($code);
+    $reason = trim($reason);
+    if ($customerId < 1 || $code === '' || mb_strlen($code) > 24
+        || mb_strlen($reason) < 5 || mb_strlen($reason) > 300
+        || preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $reason)) {
+        throw new DomainException('Vui lòng chọn lý do hủy hợp lệ (5–300 ký tự).');
+    }
+    db()->beginTransaction();
+    try {
+        $order = row('SELECT * FROM tbl_orders WHERE order_code=? AND user_id=? FOR UPDATE', [$code,$customerId]);
+        if (!$order) throw new DomainException('Không tìm thấy đơn hàng của bạn.');
+        $orderId = (int)$order['id'];
+        $options = customer_order_action_options($order);
+        if ($order['order_status'] === 'CANCELLED') throw new DomainException('Đơn hàng đã được hủy trước đó.');
+        if ($order['order_status'] === 'COMPLETED' || $order['order_status'] === 'SHIPPING') {
+            throw new DomainException('Đơn đã giao/đang giao, vui lòng liên hệ cửa hàng để được hỗ trợ.');
+        }
+
+        if ($options['can_cancel']) {
+            $items = rows('SELECT product_id,quantity FROM tbl_order_items WHERE order_id=? ORDER BY product_id ASC', [$orderId]);
+            $restore = [];
+            foreach ($items as $item) {
+                $productId = (int)$item['product_id'];
+                $restore[$productId] = ($restore[$productId] ?? 0) + (int)$item['quantity'];
+            }
+            ksort($restore, SORT_NUMERIC);
+            foreach ($restore as $productId => $quantity) {
+                $product = row('SELECT id_sanpham,soluong FROM tbl_sanpham WHERE id_sanpham=? FOR UPDATE', [$productId]);
+                if (!$product) throw new RuntimeException('Không tìm thấy sản phẩm để hoàn tồn kho; hủy đơn chưa được thực hiện.');
+                $before = (int)$product['soluong'];
+                run('UPDATE tbl_sanpham SET soluong=soluong+? WHERE id_sanpham=?', [$quantity,$productId]);
+                record_inventory_movement(
+                    $productId,$orderId,'ORDER_CANCEL_RESTORE',$quantity,$before,$before+$quantity,
+                    "Hoàn kho khi khách tự hủy đơn {$code}: {$reason}",'CUSTOMER',$customerId
+                );
+            }
+            run("UPDATE tbl_orders SET order_status='CANCELLED', cancel_reason=? WHERE id=?", [$reason,$orderId]);
+            record_order_history($orderId,'PENDING','CANCELLED','CUSTOMER',$customerId,
+                'Khách hàng tự hủy đơn: '.$reason,true);
+            create_notification($customerId,$orderId,'ORDER_CANCELLED','Đơn hàng đã hủy',
+                "Đơn {$code} đã hủy theo yêu cầu của bạn. Hàng đã được trả về tồn kho.",
+                link_to('order',['code'=>$code]),"customer_cancel:{$orderId}");
+            $updated = row('SELECT * FROM tbl_orders WHERE id=?', [$orderId]);
+            queue_order_email($updated,'ORDER_CANCELLED','Khách hàng yêu cầu hủy: '.$reason,
+                "email_customer_cancel:{$orderId}");
+            db()->commit();
+            return 'CANCELLED';
+        }
+
+        if (!$options['can_request_cancel']) throw new DomainException('Đơn hàng không còn đủ điều kiện yêu cầu hủy.');
+        $request = row('SELECT id,status FROM tbl_order_cancel_requests WHERE order_id=?', [$orderId]);
+        if ($request) {
+            if ($request['status'] === 'PENDING') {
+                db()->commit();
+                return 'REQUESTED';
+            }
+            throw new DomainException('Yêu cầu hủy trước đó đã được xử lý. Vui lòng liên hệ cửa hàng nếu cần hỗ trợ thêm.');
+        }
+        run('INSERT INTO tbl_order_cancel_requests(order_id,user_id,reason) VALUES (?,?,?)',
+            [$orderId,$customerId,$reason]);
+        record_order_history($orderId,null,'CANCEL_REQUESTED','CUSTOMER',$customerId,
+            'Khách hàng yêu cầu hủy (chờ Admin duyệt): '.$reason,true);
+        create_notification($customerId,$orderId,'ORDER_CANCEL_REQUESTED','Đã gửi yêu cầu hủy đơn',
+            "Yêu cầu hủy đơn {$code} đang chờ cửa hàng xem xét. Đơn chưa bị hủy.",
+            link_to('order',['code'=>$code]),"cancel_request:{$orderId}");
+        $updated = row('SELECT * FROM tbl_orders WHERE id=?',[$orderId]);
+        queue_order_email($updated,'ORDER_CANCEL_REQUESTED','Lý do yêu cầu hủy: '.$reason,
+            "email_cancel_request:{$orderId}");
+        db()->commit();
+        return 'REQUESTED';
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        throw $e;
+    }
+}
+
+/**
+ * Switch COD/BANK only while order is pending, unpaid and never reported.
+ * Reuse immutable bank details on repeated switches; never mark as PAID.
+ */
+function customer_change_payment_method(string $code, int $customerId, string $method): void
+{
+    if (!in_array($method,['COD','BANK'],true)) throw new DomainException('Phương thức thanh toán không hợp lệ.');
+    db()->beginTransaction();
+    try {
+        $order = row('SELECT * FROM tbl_orders WHERE order_code=? AND user_id=? FOR UPDATE', [trim($code),$customerId]);
+        if (!$order) throw new DomainException('Không tìm thấy đơn hàng của bạn.');
+        if (!customer_order_action_options($order)['can_change_payment']) {
+            throw new DomainException('Đơn đã xử lý hoặc đã báo/chuyển tiền; không thể tự đổi phương thức thanh toán.');
+        }
+        $orderId = (int)$order['id'];
+        if (row("SELECT id FROM tbl_order_cancel_requests WHERE order_id=? AND status='PENDING'", [$orderId])) {
+            throw new DomainException('Đơn đang có yêu cầu hủy chờ duyệt, không thể đổi thanh toán.');
+        }
+        if ($order['payment_method'] === $method) {
+            db()->commit();
+            return;
+        }
+        if ($method === 'BANK' && order_payment_snapshot($orderId) === null) {
+            save_order_payment_snapshot($orderId,(string)$order['order_code'],(int)$order['total_amount']);
+        }
+        run("UPDATE tbl_orders SET payment_method=?, payment_review_status='NONE' WHERE id=?",[$method,$orderId]);
+        $description = 'Đổi thanh toán từ '.payment_method_label((string)$order['payment_method'])
+            .' sang '.payment_method_label($method)
+            .'. Nếu đã chuyển khoản theo QR cũ, cần liên hệ cửa hàng ngay để đối soát.';
+        record_order_history($orderId,null,'PAYMENT_METHOD_CHANGED','CUSTOMER',$customerId,$description,true);
+        $changeCount = (int)(row("SELECT COUNT(*) AS n FROM tbl_order_status_history WHERE order_id=? AND to_status='PAYMENT_METHOD_CHANGED'",[$orderId])['n'] ?? 1);
+        create_notification($customerId,$orderId,'PAYMENT_METHOD_CHANGED','Đã đổi phương thức thanh toán',
+            "Đơn {$code}: {$description}",link_to('order',['code'=>$code]),
+            "payment_change:{$orderId}:{$changeCount}");
+        $updated = row('SELECT * FROM tbl_orders WHERE id=?',[$orderId]);
+        queue_order_email($updated,'PAYMENT_METHOD_CHANGED',$description,"email_payment_change:{$orderId}:{$changeCount}");
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        throw $e;
+    }
+}
+
+/** Admin declines a pending request, retaining the order and existing payment state. */
+function admin_decline_cancel_request(int $orderId, int $adminId, string $note): void
+{
+    $note = trim($note);
+    if (mb_strlen($note)<5 || mb_strlen($note)>300
+        || preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/',$note)) {
+        throw new DomainException('Nhập lý do từ chối yêu cầu hủy (5–300 ký tự).');
+    }
+    db()->beginTransaction();
+    try {
+        $order = row('SELECT * FROM tbl_orders WHERE id=? FOR UPDATE',[$orderId]);
+        if (!$order) throw new DomainException('Không tìm thấy đơn hàng.');
+        $request = row("SELECT * FROM tbl_order_cancel_requests WHERE order_id=? AND status='PENDING' FOR UPDATE",[$orderId]);
+        if (!$request) throw new DomainException('Không còn yêu cầu hủy đang chờ duyệt.');
+        run("UPDATE tbl_order_cancel_requests SET status='DECLINED',admin_note=?,resolved_at=NOW(),resolved_by=? WHERE id=?",
+            [$note,$adminId,$request['id']]);
+        record_order_history($orderId,null,'CANCEL_DECLINED','ADMIN',$adminId,
+            'Cửa hàng chưa thể chấp thuận yêu cầu hủy: '.$note,true);
+        create_notification((int)$order['user_id'],$orderId,'ORDER_CANCEL_DECLINED','Yêu cầu hủy chưa được chấp thuận',
+            "Đơn {$order['order_code']}: {$note}",link_to('order',['code'=>$order['order_code']]),
+            "cancel_declined:{$orderId}");
+        $updated = row('SELECT * FROM tbl_orders WHERE id=?',[$orderId]);
+        queue_order_email($updated,'ORDER_CANCEL_DECLINED',$note,"email_cancel_declined:{$orderId}");
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        throw $e;
+    }
+}
