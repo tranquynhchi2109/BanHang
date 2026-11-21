@@ -18,7 +18,7 @@ thiết lập MB Bank và giữ nguyên bảng/dữ liệu cũ.
    git switch main
    git pull origin main
    ```
-5. Vào trang quản trị → Sản phẩm, chỉnh giá **256GB / 512GB / 1TB** bằng giá cửa hàng duyệt. Mục nào bỏ trống **không bán**, không tự tính thêm phí.
+5. Vào trang quản trị → Sản phẩm, kiểm tra những giá dung lượng được chuyển từ frontend cũ (128GB = giá gốc, 256GB +2 triệu, 512GB +5 triệu, 1TB +10 triệu), rồi sửa giá nếu cần. Đây là giá **đã từng hiển thị trên frontend**, không phải báo giá thị trường đã được xác minh.
 6. Dùng một đơn hàng thử COD để đối chiếu: trang sản phẩm → giỏ → checkout → đơn hàng. Kiểm tra MB Bank (970422, 0973258529) và tên người nhận thực tế trước khi mở nhận chuyển khoản.
 
 **Không import lại file `web_mysqli.sql` mẫu hoặc bản SQL cũ lên database đang có dữ liệu.**
@@ -26,7 +26,7 @@ Bản export riêng của mày vẫn cần giữ để khôi phục nếu có s�
 
 ## Giá sản phẩm thống nhất
 - Điện thoại 128GB: từ `tbl_product_variants` (mới), ban đầu được đưa từ **giá thật** `tbl_sanpham.giasp` (cũ).
-- Điện thoại 256GB / 512GB / 1TB: chỉ được mở bán sau khi quản trị viên nhập giá chính xác vào `tbl_product_variants`.
+- Điện thoại 256GB / 512GB / 1TB: `banhang.sql` đưa mức giá từng hiển thị trên frontend cũ vào `tbl_product_variants` bằng `INSERT IGNORE`. Không ghi đè cấu hình Admin đã lưu. Chủ shop nên xác nhận lại các mức giá trước khi nhận thanh toán.
 - Laptop/phụ kiện/sản phẩm khác: `tbl_sanpham.giasp`.
 - Danh sách sản phẩm, chi tiết, giỏ hàng, checkout đều dùng hàm `variant_price()`, đọc từ MySQL.
 - Giỏ cũ có dung lượng chưa có giá sẽ được nhắc xóa/chọn lại; không hiển thị sai mức 0đ.
@@ -47,3 +47,9 @@ Hãy thay mật khẩu demo, dùng HTTPS, MySQL user quyền tối thiểu, cậ
 GitHub Actions: PHP lint, tạo database chỉ bằng `banhang.sql`, chạy lại nhiều lần,
 kiểm thử bảo toàn đơn khi đổi tên bảng, kiểm tra giá dung lượng từ SQL
 và không có mức phụ thu ẩn trong PHP.
+
+## Đồng bộ dữ liệu FE → MySQL
+- Dữ liệu sản phẩm thật (Samsung S24 Ultra, Sony WH-1000XM5, Anker...) vốn đã nằm trong `tbl_sanpham` của bản export người dùng gửi.
+- Thiếu phần bản dung lượng 1TB trong `tbl_product_variants`. Import lại duy nhất `banhang.sql` bổ sung hàng 1TB và các bản còn thiếu theo đúng giá giao diện cũ đã từng hiện, không sửa/xóa dữ liệu khách hàng hay đè giá Admin.
+- Ví dụ Samsung S24 Ultra: gốc 27.500.000đ, 1TB 37.500.000đ. Sau khi import, sản phẩm, giỏ hàng và checkout đều đọc một giá từ SQL.
+- Backend không thể tự đẩy dữ liệu vào MySQL `localhost` của máy người dùng qua GitHub; phải import SQL trên XAMPP một lần.

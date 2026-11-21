@@ -41,7 +41,10 @@ jobs:
           mysql -h127.0.0.1 -uroot web_mysqli -e "INSERT INTO tbl_sanpham(id_sanpham,tensanpham,masp,giasp,soluong,hinhanh,tomtat,noidung,tinhtrang,id_danhmuc) VALUES (1,'CI Phone','CI1',27500000,10,'ci.jpg','','',1,1);"
           mysql -h127.0.0.1 -uroot < banhang.sql
           test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli -e "SELECT price FROM tbl_product_variants WHERE product_id=1 AND variant_code='128GB'")" = '27500000'
-          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli -e "SELECT COUNT(*) FROM tbl_product_variants WHERE product_id=1 AND variant_code='1TB'")" = '0'
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli -e "SELECT price FROM tbl_product_variants WHERE product_id=1 AND variant_code='1TB'")" = '37500000'
+          mysql -h127.0.0.1 -uroot web_mysqli -e "UPDATE tbl_product_variants SET price=35900000 WHERE product_id=1 AND variant_code='1TB';"
+          mysql -h127.0.0.1 -uroot < banhang.sql
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli -e "SELECT price FROM tbl_product_variants WHERE product_id=1 AND variant_code='1TB'")" = '35900000'
       - name: Check PHP uses database variant prices exactly
         env:
           DB_HOST: 127.0.0.1
@@ -49,8 +52,8 @@ jobs:
           DB_USER: root
           DB_PASS: root
         run: |
-          php -r 'require "app.php"; $p=row("SELECT p.*,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.id_sanpham=1"); if(variant_price($p,"128GB")!==27500000)exit(1);try{variant_price($p,"1TB");exit(2);}catch(DomainException $e){echo "Unconfigured 1TB is blocked\n";}'
-          php -r 'require "app.php"; run("INSERT INTO tbl_product_variants(product_id,variant_code,price,is_active) VALUES (1,?,?,1)",["1TB",37600000]);$p=row("SELECT p.*,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.id_sanpham=1");if(variant_price($p,"1TB")!==37600000)exit(1);echo "Exact database price verified\n";'
+          php -r 'require "app.php"; $p=row("SELECT p.*,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.id_sanpham=1"); if(variant_price($p,"128GB")!==27500000)exit(1);if(variant_price($p,"1TB")!==35900000)exit(2);echo "All storefront capacity prices come from DB\n";'
+          php -r 'require "app.php"; run("UPDATE tbl_product_variants SET price=? WHERE product_id=? AND variant_code=?", [37600000,1,"1TB"]);$p=row("SELECT p.*,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.id_sanpham=1");if(variant_price($p,"1TB")!==37600000)exit(1);echo "Admin price override is read from DB\n";'
       - name: Verify upgrade from old v2 names preserves orders
         env:
           MYSQL_PWD: root

@@ -152,10 +152,26 @@ CREATE TABLE IF NOT EXISTS tbl_product_variants (
  UNIQUE KEY uniq_product_variant (product_id,variant_code),
  INDEX idx_product_active (product_id,is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
--- Only seed the KNOWN 128GB price. Never fabricate 256/512/1TB price uplifts.
+-- Seed real records for all four capacities at the EXACT prices
+-- displayed by the former PHP frontend (not independently verified market prices).
+-- Legacy frontend formula: 128GB base; 256GB +2m; 512GB +5m; 1TB +10m.
+-- Samsung S24 Ultra: 27,500,000 (128GB) and 37,500,000 (1TB).
+-- Never overwrite previously saved admin prices or disabled variants:
+-- UNIQUE(product_id,variant_code) + INSERT IGNORE preserves existing records.
+-- Verify prices in Admin before accepting real customer payments.
 INSERT IGNORE INTO tbl_product_variants (product_id,variant_code,price,is_active)
-SELECT p.id_sanpham,'128GB',p.giasp,1
-FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc
+SELECT p.id_sanpham,
+       cap.variant_code,
+       CAST(p.giasp AS UNSIGNED) + cap.legacy_surcharge,
+       1
+FROM tbl_sanpham p
+JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc
+CROSS JOIN (
+ SELECT '128GB' AS variant_code, 0 AS legacy_surcharge
+ UNION ALL SELECT '256GB', 2000000
+ UNION ALL SELECT '512GB', 5000000
+ UNION ALL SELECT '1TB', 10000000
+) AS cap
 WHERE LOWER(c.tendanhmuc) LIKE '%điện thoại%' AND p.giasp>0;
 
 INSERT IGNORE INTO tbl_settings(setting_key,setting_value) VALUES
