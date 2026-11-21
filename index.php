@@ -218,7 +218,7 @@ try {
     $dbSchemaError = $e instanceof PDOException && in_array((string)$e->getCode(), ['42S02', '42S22'], true);
     $title = $dbSchemaError ? 'Cơ sở dữ liệu chưa đồng bộ' : 'Không thể xử lý yêu cầu';
     $explanation = $dbSchemaError
-        ? 'Máy chủ đang thiếu bảng hoặc cột cần thiết để xử lý đơn hàng. Quản trị viên cần sao lưu dữ liệu và chạy database_upgrade.sql trong phpMyAdmin, không import lại web_mysqli.sql.'
+        ? 'Máy chủ đang thiếu bảng hoặc cột cần thiết để xử lý đơn hàng. Quản trị viên cần sao lưu dữ liệu và chạy banhang.sql trong phpMyAdmin, không nhập lại bản SQL mẫu.'
         : 'Có lỗi khi xử lý yêu cầu. Vui lòng kiểm tra nhật ký PHP/Apache trên máy chủ.';
     echo '<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
     echo '<title>' . h($title) . ' | BanHang</title><link rel="stylesheet" href="' . h(asset_url('css/style.css')) . '"></head><body>';

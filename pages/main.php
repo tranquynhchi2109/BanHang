@@ -261,5 +261,5 @@ echo '</main>';
 } catch (Throwable $e) {
     error_log('[BanHang rendering] '.$e->getMessage());
     http_response_code(500);
-    echo '<section class="container section"><div class="surface"><h1>Không thể hiển thị trang.</h1><p>Kiểm tra kết nối MySQL và đã import database_upgrade.sql.</p></div></section>';
+    echo '<section class="container section"><div class="surface"><h1>Không thể hiển thị trang.</h1><p>Kiểm tra kết nối MySQL và đã import banhang.sql.</p></div></section>';
 }
