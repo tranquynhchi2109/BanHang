@@ -81,14 +81,33 @@ và không có mức phụ thu ẩn trong PHP.
 - **Phân tách doanh thu & COD:** Doanh thu thực nhận chỉ tính các đơn có `payment_status = 'PAID'` (đã đối soát BANK hoặc đã xác nhận thu tiền COD); không bao giờ tính đơn BANK `UNPAID` thành tiền đã nhận. Đơn COD có nút xác nhận thu tiền riêng khi đang giao/đã giao.
 - **Email SMTP tùy chọn (`mailer.php`, `tbl_email_outbox`):** Cấu hình qua biến môi trường hoặc `admin/config/config.local.php` (xem mẫu `admin/config/config.local.example.php`). Dùng hàng đợi outbox gửi ngoài transaction DB; nếu chưa cấu hình SMTP, website và thông báo trên web vẫn hoạt động bình thường và không báo sai là đã gửi email.
 
-## Hướng dẫn cập nhật XAMPP không mất dữ liệu
+## Hướng dẫn cập nhật XAMPP không mất dữ liệu & Rollback
 
-1. Mở `phpMyAdmin`, chọn database `web_mysqli` → tab **Export** để sao lưu toàn bộ dữ liệu hiện tại ra file `.sql` riêng.
-2. Tại `web_mysqli` → tab **Import**, nhập duy nhất file **`banhang.sql`** (tương thích MariaDB 10.4+ / MySQL 8.0, chạy lại an toàn, không DROP/TRUNCATE dữ liệu cũ).
-3. Cập nhật source code:
+1. **Sao lưu trước (Backup):** Mở `phpMyAdmin`, chọn database `web_mysqli` → tab **Export** → xuất toàn bộ dữ liệu ra file `.sql` riêng (cất ngoài thư mục web).
+2. **Nâng cấp schema:** Tại `web_mysqli` → tab **Import**, nhập duy nhất file **`banhang.sql`** (tương thích MariaDB 10.4+ / MySQL 8.0, chạy lại an toàn, không DROP/TRUNCATE dữ liệu cũ, không tự gán tài khoản ngân hàng hiện tại cho các đơn BANK cũ chưa có snapshot).
+3. **Cập nhật source code:**
    ```powershell
    cd C:\xampp\htdocs\web_banhang
    git switch main
    git pull origin main
    ```
-4. (Tùy chọn) Nếu muốn bật gửi email SMTP, sao chép `admin/config/config.local.example.php` thành `admin/config/config.local.php` và điền thông tin `SMTP_*` (file này đã nằm trong `.gitignore`, không đẩy lên GitHub).
+4. **Rollback khi cần:** Nếu gặp sự cố, khôi phục bản Export `.sql` ở bước 1 trong `phpMyAdmin` và chuyển mã nguồn về commit ổn định trước đó (`git checkout <commit>`).
+
+## Hướng dẫn bật Email Worker (Windows Task Scheduler trên XAMPP)
+
+Mọi thao tác tạo đơn, xác nhận thanh toán và cập nhật trạng thái chỉ ghi email vào bảng `tbl_email_outbox` trong transaction rồi trả kết quả ngay — **không gửi SMTP trong request HTTP**.
+
+1. Sao chép `admin/config/config.local.example.php` thành `admin/config/config.local.php` (đã nằm trong `.gitignore`) và cấu hình `SMTP_HOST`, `SMTP_PORT` (`587` với `tls` hoặc `465` với `ssl`), `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM_EMAIL`.
+2. Chạy thử worker qua PowerShell:
+   ```powershell
+   C:\xampp\php\php.exe C:\xampp\htdocs\web_banhang\scripts\email_worker.php --limit=10 --stale-minutes=5
+   ```
+3. **Thiết lập Windows Task Scheduler tự động chạy mỗi 1 phút:**
+   - Mở **Task Scheduler** → **Create Task...** → đặt tên `BanHang Email Worker`.
+   - Tab **Triggers** → **New...** → Begin the task: *On a schedule* (Daily) → tích **Repeat task every: 1 minute** → for a duration of: *Indefinitely*.
+   - Tab **Actions** → **New...** → Action: *Start a program*:
+     - **Program/script:** `C:\xampp\php\php.exe`
+     - **Add arguments:** `C:\xampp\htdocs\web_banhang\scripts\email_worker.php --limit=10 --stale-minutes=5`
+     - **Start in:** `C:\xampp\htdocs\web_banhang`
+   - Tab **Settings** → tích *If the task is already running: Do not start a new instance* (dù worker đã có khóa atomic claim ở DB chống gửi trùng khi hai tiến trình chạy song song).
+   - File `scripts/email_worker.php` bị chặn truy cập HTTP trực tiếp bởi `scripts/.htaccess` và kiểm tra `PHP_SAPI === 'cli'`.

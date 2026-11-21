@@ -483,7 +483,23 @@ function claim_email_outbox_batch(int $limit = 5, ?string $claimToken = null): a
 }
 
 /**
- * Process email outbox outside any DB transaction.
+ * Re-queue eligible FAILED rows (attempts < max) and recover stale PROCESSING rows
+ * so the CLI worker picks them up on the next tick without blocking web requests.
+ */
+function requeue_failed_outbox_emails(): array
+{
+    $recovered = recover_stale_outbox_rows();
+    $maxAttempts = EMAIL_OUTBOX_MAX_ATTEMPTS;
+    $requeued = run(
+        "UPDATE tbl_email_outbox
+         SET status = 'PENDING', next_retry_at = NOW()
+         WHERE status = 'FAILED' AND attempts < {$maxAttempts}"
+    );
+    return ['recovered' => $recovered, 'requeued' => $requeued];
+}
+
+/**
+ * Process email outbox outside any DB transaction (for CLI worker & tests).
  * Optional $sender callable allows deterministic unit/integration testing without external SMTP.
  * Historical SKIPPED rows are NOT auto-dispatched when SMTP is later enabled.
  */

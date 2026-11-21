@@ -269,6 +269,8 @@ try {
         run('DELETE FROM tbl_email_outbox WHERE id=?', [$obId]);
     }
     foreach ($createdOrders as $oid) {
+        run('DELETE FROM tbl_inventory_movements WHERE order_id=?', [$oid]);
+        run('DELETE FROM tbl_order_payment_details WHERE order_id=?', [$oid]);
         run('DELETE FROM tbl_email_outbox WHERE order_id=?', [$oid]);
         run('DELETE FROM tbl_notifications WHERE order_id=?', [$oid]);
         run('DELETE FROM tbl_order_status_history WHERE order_id=?', [$oid]);
@@ -282,6 +284,7 @@ try {
         run('DELETE FROM tbl_dangky WHERE id_dangky=?', [$uid]);
     }
     if ($createdProductId !== null) {
+        run('DELETE FROM tbl_inventory_movements WHERE product_id=?', [$createdProductId]);
         run('DELETE FROM tbl_product_variants WHERE product_id=?', [$createdProductId]);
         run('DELETE FROM tbl_sanpham WHERE id_sanpham=?', [$createdProductId]);
     }

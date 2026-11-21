@@ -366,17 +366,21 @@ elseif ($page==='orders' || $page==='order') {
                 if (!empty($order['cod_paid_at'])) echo '<small>Xác nhận lúc: '.h($order['cod_paid_at']).'</small>';
                 echo '</div>';
             } elseif ($order['payment_method']==='BANK' && $order['payment_status']==='UNPAID' && $curStatus!=='CANCELLED') {
-                $qr=qr_link($order);
-                if ($qr) {
-                    $bankId = setting('bank_id');
-                    $bankLabel = in_array(strtoupper($bankId), ['970422','MB','MBBANK'], true) ? 'MB Bank (Ngân hàng Quân đội)' : $bankId;
-                    echo '<img class="payment-qr" src="'.h($qr).'" alt="Mã QR chuyển khoản theo đơn hàng">';
+                $snapshot = order_payment_snapshot((int)$order['id']);
+                $qr = $snapshot ? qr_link($order, $snapshot) : null;
+                if ($snapshot && $qr) {
+                    $bankLabel = bank_display_label((string)$snapshot['bank_id']);
+                    echo '<img class="payment-qr" src="'.h($qr).'" alt="Mã QR chuyển khoản cố định theo đơn hàng">';
                     echo '<p>Ngân hàng: <strong>'.h($bankLabel).'</strong></p>';
-                    echo '<p>Số tài khoản: <strong>'.h(setting('bank_account')).'</strong></p>';
-                    if (trim(setting('bank_name')) !== '') echo '<p>Chủ tài khoản: <strong>'.h(setting('bank_name')).'</strong></p>';
-                    echo '<p>Nội dung chuyển khoản: <code>BANHANG '.h($order['order_code']).'</code></p>';
-                    echo '<p class="hint">Hãy kiểm tra đúng tên người nhận trong ứng dụng ngân hàng trước khi chuyển. Cửa hàng đối soát thủ công; quét QR không đồng nghĩa đơn đã thanh toán.</p>';
-                } else echo '<p>Chưa cấu hình tài khoản nhận chuyển khoản.</p>';
+                    echo '<p>Số tài khoản: <strong>'.h($snapshot['bank_account']).'</strong></p>';
+                    if (trim((string)$snapshot['bank_account_name']) !== '') echo '<p>Chủ tài khoản: <strong>'.h($snapshot['bank_account_name']).'</strong></p>';
+                    echo '<p>Số tiền cần chuyển: <strong>'.money((int)$snapshot['expected_amount']).'</strong></p>';
+                    echo '<p>Nội dung chuyển khoản: <code>'.h($snapshot['transfer_content']).'</code></p>';
+                    echo '<p class="hint">Thông tin tài khoản được lưu cố định theo đơn hàng này tại thời điểm đặt. Hãy kiểm tra đúng tên người nhận trong ứng dụng ngân hàng trước khi chuyển. Cửa hàng đối soát thủ công; quét QR không đồng nghĩa đơn đã thanh toán.</p>';
+                } else {
+                    echo '<div class="payment-alert"><strong>Đơn hàng cũ chưa có snapshot tài khoản nhận tiền</strong>';
+                    echo '<p>Đơn hàng này được tạo trước khi hệ thống cố định tài khoản VietQR theo từng đơn. Để tránh sai lệch tài khoản nhận, hệ thống không tự gán tài khoản cài đặt hiện tại. Vui lòng <a class="link-blue" href="'.link_to('contact').'">liên hệ bộ phận CSKH</a> để xác nhận thông tin chuyển khoản chính xác.</p></div>';
+                }
                 if ($order['payment_review_status']==='REPORTED') {
                     echo '<div class="payment-status-note"><strong>Đã báo chuyển khoản – đang chờ đối soát</strong>';
                     echo '<p>Đây chưa phải xác nhận thanh toán thành công. Cửa hàng đang kiểm tra giao dịch thực tế trên MB Bank và sẽ gửi thông báo ngay khi xác nhận.</p>';

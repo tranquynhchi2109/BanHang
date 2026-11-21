@@ -89,6 +89,7 @@ try {
         );
         if (!$order) json_out(['ok' => false, 'error' => 'Không tìm thấy đơn hàng'], 404);
         $payState = payment_state_summary($order);
+        $snapshot = $order['payment_method'] === 'BANK' ? order_payment_snapshot((int)$order['id']) : null;
         $publicHistory = rows(
             'SELECT from_status,to_status,note,created_at FROM tbl_order_status_history WHERE order_id=? AND is_public=1 ORDER BY id ASC',
             [(int)$order['id']]
@@ -115,6 +116,7 @@ try {
         json_out([
             'ok' => true,
             'order_code' => (string)$order['order_code'],
+            'total_amount' => (int)$order['total_amount'],
             'total_amount_formatted' => money((int)$order['total_amount']),
             'order_status' => (string)$order['order_status'],
             'order_status_label' => order_status_label((string)$order['order_status']),
@@ -126,6 +128,15 @@ try {
             'payment_review_label' => payment_review_label((string)$order['payment_review_status']),
             'payment_label' => $payState['label'],
             'payment_tone' => $payState['tone'],
+            'payment_snapshot' => $snapshot ? [
+                'has_snapshot' => true,
+                'bank_id' => (string)$snapshot['bank_id'],
+                'bank_label' => bank_display_label((string)$snapshot['bank_id']),
+                'bank_account' => (string)$snapshot['bank_account'],
+                'bank_account_name' => (string)$snapshot['bank_account_name'],
+                'expected_amount' => (int)$snapshot['expected_amount'],
+                'transfer_content' => (string)$snapshot['transfer_content'],
+            ] : ['has_snapshot' => false],
             'shipping_carrier' => (string)($order['shipping_carrier'] ?? ''),
             'tracking_code' => (string)($order['tracking_code'] ?? ''),
             'shipped_at' => (string)($order['shipped_at'] ?? ''),

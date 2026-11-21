@@ -69,7 +69,7 @@ try {
                 $sku=trim((string)($_POST['sku']??''));
                 $category=as_int($_POST['category']??0);
                 $price=as_int($_POST['price']??-1,1,2000000000);
-                $stock=as_int($_POST['stock']??-1,0,1000000);
+                $initialStock=$id===0?as_int($_POST['stock']??-1,0,1000000):0;
                 $summary=trim((string)($_POST['summary']??''));
                 $description=trim((string)($_POST['description']??''));
                 $visible=(int)(($_POST['visible']??'0')==='1');
@@ -92,12 +92,16 @@ try {
                 db()->beginTransaction();
                 try {
                     if ($id>0) {
-                        run('UPDATE tbl_sanpham SET tensanpham=?,masp=?,giasp=?,soluong=?,hinhanh=?,tomtat=?,noidung=?,tinhtrang=?,id_danhmuc=? WHERE id_sanpham=?',
-                            [$name,$sku,$price,$stock,$filename,$summary,$description,$visible,$category,$id]);
+                        // Never overwrite soluong when editing product metadata (prevents lost updates during checkout)
+                        run('UPDATE tbl_sanpham SET tensanpham=?,masp=?,giasp=?,hinhanh=?,tomtat=?,noidung=?,tinhtrang=?,id_danhmuc=? WHERE id_sanpham=?',
+                            [$name,$sku,$price,$filename,$summary,$description,$visible,$category,$id]);
                     } else {
                         run('INSERT INTO tbl_sanpham(tensanpham,masp,giasp,soluong,hinhanh,tomtat,noidung,tinhtrang,id_danhmuc) VALUES (?,?,?,?,?,?,?,?,?)',
-                            [$name,$sku,$price,$stock,$filename,$summary,$description,$visible,$category]);
+                            [$name,$sku,$price,$initialStock,$filename,$summary,$description,$visible,$category]);
                         $id=(int)db()->lastInsertId();
+                        if ($initialStock>0) {
+                            record_inventory_movement($id,null,'INITIAL',$initialStock,0,$initialStock,'Khởi tạo tồn kho ban đầu khi tạo sản phẩm','ADMIN',$adminId);
+                        }
                     }
                     if ($isPhone) {
                         run('INSERT INTO tbl_product_variants(product_id,variant_code,price,is_active) VALUES (?,?,?,1)
@@ -118,8 +122,19 @@ try {
                     if (db()->inTransaction()) db()->rollBack();
                     throw $e;
                 }
-                notice('Đã lưu sản phẩm và giá các dung lượng.','success');
+                notice('Đã lưu thông tin sản phẩm và giá dung lượng (tồn kho được giữ nguyên an toàn).','success');
                 redirect_to(admin_to('products'));
+            case 'adjust_stock':
+                $productId=as_int($_POST['id']??0,1,2147483647);
+                $delta=as_int($_POST['delta']??0,-1000000,1000000);
+                $reason=(string)($_POST['reason']??'');
+                $expectedRaw=trim((string)($_POST['expected_stock']??''));
+                $expected=$expectedRaw!==''?as_int($expectedRaw,0,1000000000):null;
+                $adj=adjust_product_stock($productId,$delta,$reason,$adminId,$expected);
+                notice("Đã điều chỉnh tồn kho: {$adj['before']} → {$adj['after']} (thay đổi " . ($adj['delta']>0?'+':'') . "{$adj['delta']}).",'success');
+                $returnTo=(string)($_POST['return_to']??'inventory');
+                if ($returnTo==='product_form') redirect_to(admin_to('product_form',['id'=>$productId]));
+                redirect_to(admin_to('inventory'));
             case 'hide_product':
                 $id=as_int($_POST['id']??0);
                 run('UPDATE tbl_sanpham SET tinhtrang=0 WHERE id_sanpham=?',[$id]);
@@ -155,7 +170,9 @@ try {
             case 'save_order_notes':
                 $id=as_int($_POST['id']??0);
                 $noteRes=save_order_notes($id,$adminId,$_POST);
-                if (!$noteRes['changed']) {
+                if (!empty($noteRes['duplicate_retry'])) {
+                    notice('Yêu cầu cập nhật này đã được xử lý trước đó (không tạo thông báo trùng).','info');
+                } elseif (!$noteRes['changed']) {
                     notice('Không có thay đổi nào cần lưu.','info');
                 } elseif ($noteRes['shipping_notified'] || $noteRes['customer_note_notified']) {
                     notice('Đã lưu ghi chú/vận chuyển và gửi thông báo tới khách hàng.','success');
@@ -193,11 +210,11 @@ try {
                 notice('Đã gửi thông báo tới khách hàng.','success');
                 redirect_to(admin_to('customer',['id'=>$customerId]));
             case 'retry_email_outbox':
-                $stats=dispatch_email_outbox(10);
-                if (!smtp_is_configured()) {
-                    notice('SMTP chưa được cấu hình nên không thể gửi email. Các thông báo trên website vẫn hoạt động bình thường.','info');
+                $rq=requeue_failed_outbox_emails();
+                if (!smtp_is_configured(true)) {
+                    notice('SMTP chưa cấu hình hợp lệ nên worker chưa thể gửi mail. Các thông báo trên website vẫn hoạt động bình thường.','info');
                 } else {
-                    notice("Kết quả xử lý hàng đợi email: đã gửi {$stats['sent']}, thất bại {$stats['failed']}, bỏ qua {$stats['skipped']}.",$stats['failed']>0?'danger':'success');
+                    notice("Đã đưa {$rq['requeued']} email thất bại vào hàng đợi và khôi phục {$rq['recovered']} job treo. Worker CLI (scripts/email_worker.php) sẽ gửi nền không làm chậm Admin.",'success');
                 }
                 redirect_to(admin_to('settings'));
             case 'save_settings':
@@ -253,6 +270,11 @@ try {
     }
     if ($act==='send_customer_notification' && $postedCustomerId && $postedCustomerId>0) {
         redirect_to(admin_to('customer',['id'=>(int)$postedCustomerId]));
+    }
+    if ($act==='adjust_stock') {
+        $ret=(string)($_POST['return_to']??'inventory');
+        if ($ret==='product_form' && $postedId && $postedId>0) redirect_to(admin_to('product_form',['id'=>(int)$postedId]));
+        redirect_to(admin_to('inventory'));
     }
     if ($act==='save_product' && $postedId && $postedId>0) {
         redirect_to(admin_to('product_form',['id'=>(int)$postedId]));
@@ -336,56 +358,39 @@ function stat_card(string $label,string $value,string $note='',string $tone=''):
 {
     echo '<article class="stat-card surface'.($tone!==''?' stat-card--'.h($tone):'').'"><p>'.h($label).'</p><strong>'.h($value).'</strong><span>'.h($note).'</span></article>';
 }
-function render_revenue_chart(string $range, string $pageTarget): void
+function render_revenue_chart(string $range, string $pageTarget, ?array $report = null): void
 {
-    $range = in_array($range, ['7d','30d','12m'], true) ? $range : '30d';
-    echo '<div class="chart-head"><h2>Biểu đồ doanh thu</h2><div class="filter-tabs">';
+    $report = $report ?? revenue_report_data($range);
+    $range = $report['range'];
+    $series = $report['series'];
+    echo '<div class="chart-head"><h2>Biểu đồ doanh thu theo ngày thực nhận</h2><div class="filter-tabs">';
     foreach (['7d'=>'7 ngày qua','30d'=>'30 ngày qua','12m'=>'12 tháng qua'] as $k=>$label) {
         echo '<a class="'.($range===$k?'active':'').'" href="'.admin_to($pageTarget,['range'=>$k]).'">'.h($label).'</a>';
     }
     echo '</div></div>';
-    if ($range==='12m') {
-        $series = rows(
-            "SELECT DATE_FORMAT(created_at,'%Y-%m') AS bucket,
-                    COUNT(*) AS order_count,
-                    COALESCE(SUM(CASE WHEN order_status<>'CANCELLED' THEN total_amount ELSE 0 END),0) AS gross_total,
-                    COALESCE(SUM(CASE WHEN payment_status='PAID' THEN total_amount ELSE 0 END),0) AS paid_total
-             FROM tbl_orders
-             WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
-             GROUP BY DATE_FORMAT(created_at,'%Y-%m')
-             ORDER BY bucket ASC"
-        );
-    } else {
-        $days = $range==='7d' ? 7 : 30;
-        $series = rows(
-            "SELECT DATE_FORMAT(created_at,'%Y-%m-%d') AS bucket,
-                    COUNT(*) AS order_count,
-                    COALESCE(SUM(CASE WHEN order_status<>'CANCELLED' THEN total_amount ELSE 0 END),0) AS gross_total,
-                    COALESCE(SUM(CASE WHEN payment_status='PAID' THEN total_amount ELSE 0 END),0) AS paid_total
-             FROM tbl_orders
-             WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL {$days} DAY)
-             GROUP BY DATE_FORMAT(created_at,'%Y-%m-%d')
-             ORDER BY bucket ASC"
-        );
-    }
+    echo '<p class="hint">Giá trị đơn phát sinh tính theo ngày đặt (<code>created_at</code>). Tiền thực nhận tính đúng theo ngày đối soát BANK (<code>payment_verified_at</code>) và ngày xác nhận thu COD (<code>cod_paid_at</code>). Đây là doanh thu gộp đã xác nhận thu, không phải lợi nhuận và chưa phản ánh hoàn tiền nếu có.</p>';
     if (!$series) {
-        echo '<p class="hint">Chưa có dữ liệu đơn hàng trong khoảng thời gian này.</p>';
+        echo '<p class="hint">Chưa có dữ liệu trong khoảng thời gian này.</p>';
         return;
     }
     $maxVal = 1;
     foreach ($series as $rowItem) {
-        $maxVal = max($maxVal, (int)$rowItem['gross_total'], (int)$rowItem['paid_total']);
+        $maxVal = max($maxVal, (int)$rowItem['ordered_total'], (int)$rowItem['paid_total']);
     }
-    echo '<div class="chart-legend"><span><i class="legend-dot legend-dot--paid"></i> Tiền thực nhận (Đã xác nhận PAID)</span><span><i class="legend-dot legend-dot--gross"></i> Giá trị đơn chưa hủy</span></div>';
+    echo '<div class="chart-legend"><span><i class="legend-dot legend-dot--paid"></i> Tiền thực nhận (theo ngày xác nhận PAID)</span><span><i class="legend-dot legend-dot--gross"></i> Giá trị đơn phát sinh (theo ngày đặt)</span></div>';
     echo '<div class="bar-chart">';
     foreach ($series as $rowItem) {
         $paidPct = round(((int)$rowItem['paid_total'] / $maxVal) * 100, 1);
-        $grossPct = round(((int)$rowItem['gross_total'] / $maxVal) * 100, 1);
+        $grossPct = round(((int)$rowItem['ordered_total'] / $maxVal) * 100, 1);
         $shortLabel = strlen((string)$rowItem['bucket']) === 10 ? substr((string)$rowItem['bucket'], 5) : (string)$rowItem['bucket'];
-        echo '<div class="bar-col" title="'.h($rowItem['bucket'].' · Thực nhận: '.money((int)$rowItem['paid_total']).' · Đơn chưa hủy: '.money((int)$rowItem['gross_total'])).'">';
+        $tip = $rowItem['bucket']
+            . ' · Thực nhận: ' . money((int)$rowItem['paid_total'])
+            . ' (BANK: ' . money((int)$rowItem['bank_paid']) . ', COD: ' . money((int)$rowItem['cod_paid']) . ')'
+            . ' · Đơn phát sinh: ' . money((int)$rowItem['ordered_total']);
+        echo '<div class="bar-col" title="'.h($tip).'">';
         echo '<div class="bar-pair">';
-        echo '<div class="bar-fill bar-fill--gross" style="height:'.max(2, $grossPct).'%"></div>';
-        echo '<div class="bar-fill bar-fill--paid" style="height:'.($rowItem['paid_total']>0?max(3,$paidPct):0).'%"></div>';
+        echo '<div class="bar-fill bar-fill--gross" style="height:'.($rowItem['ordered_total']>0?max(2, $grossPct):0).'%"></div>';
+        echo '<div class="bar-fill bar-fill--paid" style="height:'.($rowItem['paid_total']>0?max(3, $paidPct):0).'%"></div>';
         echo '</div><small>'.h($shortLabel).'</small></div>';
     }
     echo '</div>';
@@ -514,12 +519,37 @@ elseif ($page==='product_form') {
         echo '<label class="field-group">'.h($capacity).' (VND) <input class="field" name="variant_'.h($capacity).'" type="number" min="1" max="2000000000" placeholder="Để trống nếu chưa mở bán" value="'.h($variantValues[$capacity]??'').'"></label>';
     }
     echo '</div>';
-    echo '<label class="field-group">Tồn kho dùng chung <input class="field" type="number" min="0" max="1000000" name="stock" required value="'.h($p['soluong']??'0').'"></label>';
+    if ($id===0) {
+        echo '<label class="field-group">Tồn kho ban đầu (dùng chung) <input class="field" type="number" min="0" max="1000000" name="stock" required value="0"></label>';
+    } else {
+        echo '<div class="payment-status-note"><strong>Tồn kho hiện tại (dùng chung): '.(int)$p['soluong'].'</strong><p class="hint">Để tránh ghi đè tồn kho khi có khách đặt hàng đồng thời, form sửa thông tin sản phẩm không sửa trực tiếp tồn kho. Hãy dùng mục "Điều chỉnh tồn kho" bên dưới.</p></div>';
+    }
     echo '<label class="field-group">Trạng thái <select class="field" name="visible"><option value="1"'.((int)($p['tinhtrang']??1)===1?' selected':'').'>Đang bán</option><option value="0"'.((int)($p['tinhtrang']??1)===0?' selected':'').'>Tạm ẩn</option></select></label>';
     if (!empty($p['hinhanh'])) echo '<div class="image-preview"><img src="'.h(safe_image($p['hinhanh'])).'" alt="Ảnh hiện tại"></div>';
     echo '<label class="field-group">Ảnh (JPG, PNG, WebP ≤ 3MB) <input class="field" type="file" name="photo" accept="image/jpeg,image/png,image/webp"></label>';
-    echo '<button class="button full" type="submit">Lưu sản phẩm</button></div></div></form>';
-    if ($id) echo '<form method="post" class="admin-danger">'.csrf_field().'<input type="hidden" name="action" value="hide_product"><input type="hidden" name="id" value="'.$id.'"><button class="button button--danger" data-confirm="Ẩn sản phẩm khỏi website?">Ẩn sản phẩm</button></form>';
+    echo '<button class="button full" type="submit">Lưu thông tin sản phẩm</button></div></div></form>';
+    if ($id) {
+        echo '<div class="admin-grid admin-grid--spaced"><section class="surface"><h2>Điều chỉnh tồn kho an toàn</h2>';
+        echo '<p class="hint">Sử dụng khóa transaction và kiểm tra tồn kho hiện tại để chống mất cập nhật (lost update) khi có đơn hàng đồng thời. Nhập số dương (+5) để nhập thêm hoặc số âm (-2) để xuất/giảm.</p>';
+        echo '<form method="post">'.csrf_field().'<input type="hidden" name="action" value="adjust_stock"><input type="hidden" name="id" value="'.$id.'"><input type="hidden" name="return_to" value="product_form"><input type="hidden" name="expected_stock" value="'.(int)$p['soluong'].'">';
+        echo '<label class="field-group">Số lượng thay đổi (VD: 5 hoặc -2)<input class="field" type="number" name="delta" min="-1000000" max="1000000" required placeholder="Nhập số nguyên khác 0"></label>';
+        echo '<label class="field-group">Lý do điều chỉnh (bắt buộc)<input class="field" name="reason" minlength="3" maxlength="300" required placeholder="VD: Nhập lô hàng mới, kiểm kê thực tế..."></label>';
+        echo '<button type="submit" class="button">Xác nhận điều chỉnh tồn kho</button></form>';
+        echo '<form method="post" class="admin-danger">'.csrf_field().'<input type="hidden" name="action" value="hide_product"><input type="hidden" name="id" value="'.$id.'"><button class="button button--danger" data-confirm="Ẩn sản phẩm khỏi website?">Ẩn sản phẩm</button></form></section>';
+        echo '<section class="surface"><h2>Nhật ký biến động kho gần đây</h2>';
+        $moves=rows('SELECT movement_type,delta,stock_before,stock_after,reason,actor_type,actor_id,created_at FROM tbl_inventory_movements WHERE product_id=? ORDER BY id DESC LIMIT 15',[$id]);
+        if (!$moves) {
+            echo '<p class="hint">Chưa có biến động kho được ghi nhận.</p>';
+        } else {
+            foreach ($moves as $mv) {
+                $sign=(int)$mv['delta']>0?'+':'';
+                echo '<div class="payment-event"><strong>'.h($mv['movement_type']).' ('.$sign.(int)$mv['delta'].')</strong> · '.(int)$mv['stock_before'].' → <strong>'.(int)$mv['stock_after'].'</strong> · '.h($mv['actor_type']).' #'.(int)$mv['actor_id'].' · '.h($mv['created_at']);
+                if (trim((string)$mv['reason'])!=='') echo '<p>'.h($mv['reason']).'</p>';
+                echo '</div>';
+            }
+        }
+        echo '</section></div>';
+    }
 }
 elseif ($page==='categories') {
     admin_title('Danh mục sản phẩm','Danh sách và thứ tự hiển thị.');
@@ -709,9 +739,9 @@ elseif ($page==='order') {
     }
     echo '<hr><h2>Tổng tiền: '.money((int)$order['total_amount']).'</h2>';
 
-    // Shipping & notes editor
+    // Shipping & notes editor (with per-submission event_key for safe retry idempotency)
     echo '<hr><h3>Thông tin vận chuyển & Ghi chú</h3>';
-    echo '<form method="post" class="admin-subform">'.csrf_field().'<input type="hidden" name="action" value="save_order_notes"><input type="hidden" name="id" value="'.$id.'">';
+    echo '<form method="post" class="admin-subform">'.csrf_field().'<input type="hidden" name="action" value="save_order_notes"><input type="hidden" name="id" value="'.$id.'"><input type="hidden" name="event_key" value="'.h(bin2hex(random_bytes(12))).'">';
     echo '<div class="form-grid-2"><label class="field-group">Đơn vị vận chuyển (thực tế)<input class="field" name="shipping_carrier" maxlength="100" placeholder="VD: Giao Hàng Nhanh, Viettel Post..." value="'.h($order['shipping_carrier']??'').'"></label>';
     echo '<label class="field-group">Mã vận đơn thực tế (không tự sinh giả)<input class="field" name="tracking_code" maxlength="100" placeholder="Nhập mã vận đơn thật nếu có" value="'.h($order['tracking_code']??'').'"></label></div>';
     echo '<label class="field-group">Ghi chú gửi khách (hiển thị trên trang đơn của khách)<textarea class="field" name="customer_note" rows="2" maxlength="500">'.h($order['customer_note']??'').'</textarea></label>';
@@ -790,12 +820,20 @@ elseif ($page==='order') {
         }
     }
 
-    // BANK VietQR manual reconciliation
+    // BANK VietQR manual reconciliation (uses immutable per-order snapshot)
     if ($order['payment_method']==='BANK') {
+        $snapshot=order_payment_snapshot($id);
         echo '<hr><h3>Đối soát chuyển khoản VietQR (thủ công)</h3>';
-        echo '<p>Ngân hàng nhận: <strong>MB Bank</strong> · Số tài khoản: <strong>'.h(setting('bank_account')).'</strong></p>';
-        echo '<p>Nội dung chuyển khoản: <code>BANHANG '.h($order['order_code']).'</code></p>';
-        echo '<p>Tổng tiền cần nhận: <strong>'.money((int)$order['total_amount']).'</strong></p>';
+        if ($snapshot) {
+            echo '<p>Ngân hàng nhận (cố định theo đơn): <strong>'.h(bank_display_label((string)$snapshot['bank_id'])).'</strong> · Số tài khoản: <strong>'.h($snapshot['bank_account']).'</strong></p>';
+            if (trim((string)$snapshot['bank_account_name'])!=='') echo '<p>Chủ tài khoản: <strong>'.h($snapshot['bank_account_name']).'</strong></p>';
+            echo '<p>Nội dung chuyển khoản: <code>'.h($snapshot['transfer_content']).'</code></p>';
+            echo '<p>Tổng tiền cần nhận: <strong>'.money((int)$snapshot['expected_amount']).'</strong></p>';
+        } else {
+            echo '<div class="payment-alert"><strong>Đơn hàng cũ chưa có snapshot tài khoản ngân hàng</strong><p>Đơn này được tạo trước khi hệ thống lưu cố định thông tin tài khoản theo từng đơn. Hệ thống không tự gán tài khoản cài đặt hiện tại làm tài khoản gốc — vui lòng kiểm tra sao kê thực tế tại thời điểm đặt hàng ('.h($order['created_at']).').</p></div>';
+            echo '<p>Nội dung tham chiếu: <code>BANHANG '.h($order['order_code']).'</code></p>';
+            echo '<p>Tổng tiền cần nhận: <strong>'.money((int)$order['total_amount']).'</strong></p>';
+        }
         echo '<p>Trạng thái đối soát: <strong>'.h(payment_review_label((string)$order['payment_review_status'])).'</strong></p>';
         if ($order['payment_reported_at']) echo '<p>Khách báo lúc: <strong>'.h($order['payment_reported_at']).'</strong></p>';
         if ($order['customer_transfer_note']) echo '<p>Ghi chú chuyển khoản của khách: '.h($order['customer_transfer_note']).'</p>';
@@ -962,54 +1000,70 @@ elseif ($page==='customer') {
     echo '</div></div>';
 }
 elseif ($page==='inventory') {
-    admin_title('Tồn kho sản phẩm','Tồn kho lưu tại tbl_sanpham.soluong và được dùng chung cho các dung lượng điện thoại.');
-    echo '<div class="alert info">Chính sách tồn kho hiện tại: <strong>dùng chung theo sản phẩm</strong> (tbl_sanpham.soluong). Khi hủy đơn hợp lệ, hệ thống tự hoàn lại tồn kho chính xác một lần trong transaction.</div>';
-    admin_table_start(['Sản phẩm','SKU','Danh mục','Tồn kho','Cảnh báo','Thao tác']);
-    foreach (rows('SELECT p.id_sanpham,p.tensanpham,p.masp,p.soluong,p.tinhtrang,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc ORDER BY p.soluong ASC,p.id_sanpham DESC LIMIT 100') as $p) {
+    admin_title('Tồn kho sản phẩm','Tồn kho lưu tại tbl_sanpham.soluong (dùng chung cho các dung lượng điện thoại) và được điều chỉnh qua giao dịch khóa InnoDB.');
+    echo '<div class="alert info">Chính sách tồn kho hiện tại: <strong>dùng chung theo sản phẩm</strong> (<code>tbl_sanpham.soluong</code>), chưa tách kho riêng từng dung lượng điện thoại. Mọi điều chỉnh nhập/xuất đều ghi nhật ký vào <code>tbl_inventory_movements</code> và chống mất cập nhật khi khách checkout đồng thời.</div>';
+    $allProds=rows('SELECT p.id_sanpham,p.tensanpham,p.masp,p.soluong,p.tinhtrang,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc ORDER BY p.soluong ASC,p.id_sanpham DESC LIMIT 100');
+    echo '<div class="admin-grid"><section class="surface"><h2>Danh sách tồn kho</h2>';
+    admin_table_start(['Sản phẩm','SKU','Danh mục','Tồn kho','Cảnh báo','Điều chỉnh']);
+    foreach ($allProds as $p) {
         $stock=(int)$p['soluong'];
         $tone=$stock<=0?'danger':($stock<=5?'warning':'success');
         $lbl=$stock<=0?'Hết hàng':($stock<=5?'Sắp hết hàng':'Ổn định');
-        echo '<tr><td>'.h($p['tensanpham']).'</td><td>'.h($p['masp']).'</td><td>'.h($p['tendanhmuc']).'</td><td><strong>'.$stock.'</strong></td><td><span class="status-pill status-pill--'.$tone.'">'.$lbl.'</span></td><td><a class="link-blue" href="'.admin_to('product_form',['id'=>$p['id_sanpham']]).'">Cập nhật kho</a></td></tr>';
+        echo '<tr><td>'.h($p['tensanpham']).'</td><td>'.h($p['masp']).'</td><td>'.h($p['tendanhmuc']).'</td><td><strong>'.$stock.'</strong></td><td><span class="status-pill status-pill--'.$tone.'">'.$lbl.'</span></td><td><a class="link-blue" href="'.admin_to('product_form',['id'=>$p['id_sanpham']]).'">Điều chỉnh / Nhật ký</a></td></tr>';
     }
     admin_table_end();
+    echo '</section><section class="surface"><h2>Điều chỉnh tồn kho nhanh</h2>';
+    if ($allProds) {
+        echo '<form method="post">'.csrf_field().'<input type="hidden" name="action" value="adjust_stock"><input type="hidden" name="return_to" value="inventory">';
+        echo '<label class="field-group">Chọn sản phẩm<select class="field" name="id" required>';
+        foreach ($allProds as $p) {
+            echo '<option value="'.(int)$p['id_sanpham'].'">'.h($p['tensanpham'].' (SKU: '.$p['masp'].' · Hiện còn: '.(int)$p['soluong'].')').'</option>';
+        }
+        echo '</select></label>';
+        echo '<label class="field-group">Số lượng thay đổi (+ nhập thêm / - giảm bớt)<input class="field" type="number" name="delta" min="-1000000" max="1000000" required placeholder="VD: 10 hoặc -1"></label>';
+        echo '<label class="field-group">Lý do điều chỉnh (bắt buộc)<input class="field" name="reason" minlength="3" maxlength="300" required placeholder="VD: Nhập kho nhà cung cấp, kiểm kê..."></label>';
+        echo '<button type="submit" class="button full">Ghi nhận điều chỉnh kho</button></form>';
+    }
+    echo '<hr><h3>Biến động kho gần nhất</h3>';
+    $recentMoves=rows('SELECT m.movement_type,m.delta,m.stock_before,m.stock_after,m.reason,m.actor_type,m.created_at,p.tensanpham FROM tbl_inventory_movements m LEFT JOIN tbl_sanpham p ON p.id_sanpham=m.product_id ORDER BY m.id DESC LIMIT 12');
+    if (!$recentMoves) {
+        echo '<p class="hint">Chưa có biến động kho nào được ghi nhận.</p>';
+    } else {
+        foreach ($recentMoves as $mv) {
+            $sign=(int)$mv['delta']>0?'+':'';
+            echo '<div class="payment-event"><strong>'.h($mv['tensanpham']??'SP đã xóa').'</strong> · '.h($mv['movement_type']).' ('.$sign.(int)$mv['delta'].': '.(int)$mv['stock_before'].'→'.(int)$mv['stock_after'].')<p>'.h($mv['reason']).'</p><small>'.h($mv['actor_type']).' · '.h($mv['created_at']).'</small></div>';
+        }
+    }
+    echo '</section></div>';
 }
 elseif ($page==='revenue') {
-    admin_title('Thống kê doanh thu','Phân biệt rõ tiền đã xác nhận thanh toán (PAID), giá trị đặt hàng và khoản chưa thu.');
-    $rev=row(
-        "SELECT COALESCE(SUM(CASE WHEN payment_status='PAID' THEN total_amount ELSE 0 END),0) AS paid_total,
-                COALESCE(SUM(CASE WHEN payment_status='PAID' AND payment_method='BANK' THEN total_amount ELSE 0 END),0) AS bank_paid,
-                COALESCE(SUM(CASE WHEN payment_status='PAID' AND payment_method='COD' THEN total_amount ELSE 0 END),0) AS cod_paid,
-                COALESCE(SUM(CASE WHEN payment_status='UNPAID' AND order_status<>'CANCELLED' THEN total_amount ELSE 0 END),0) AS unpaid_total,
-                COALESCE(SUM(CASE WHEN payment_status='UNPAID' AND payment_method='BANK' AND order_status<>'CANCELLED' THEN total_amount ELSE 0 END),0) AS bank_unpaid,
-                COALESCE(SUM(CASE WHEN payment_status='UNPAID' AND payment_method='COD' AND order_status<>'CANCELLED' THEN total_amount ELSE 0 END),0) AS cod_unpaid,
-                COALESCE(SUM(CASE WHEN order_status<>'CANCELLED' THEN total_amount ELSE 0 END),0) AS gross_total,
-                SUM(order_status<>'CANCELLED') AS active_orders
-         FROM tbl_orders"
-    );
-    echo '<div class="stats">';
-    stat_card('Doanh thu thực nhận (PAID)',money((int)($rev['paid_total']??0)),'BANK đã đối soát: '.money((int)($rev['bank_paid']??0)).' · COD đã thu: '.money((int)($rev['cod_paid']??0)),'success');
-    stat_card('BANK chưa thanh toán',money((int)($rev['bank_unpaid']??0)),'Không tính vào doanh thu thực nhận','warning');
-    stat_card('COD chưa xác nhận thu',money((int)($rev['cod_unpaid']??0)),'Đơn COD chưa đối soát tiền mặt','info');
-    stat_card('Tổng giá trị đặt (chưa hủy)',money((int)($rev['gross_total']??0)),(int)($rev['active_orders']??0).' đơn hàng chưa hủy');
-    echo '</div>';
     $range=(string)($_GET['range']??'12m');
-    echo '<div class="surface chart-panel">';
-    render_revenue_chart($range,'revenue');
+    $report=revenue_report_data($range);
+    $range=$report['range'];
+    $t=$report['totals'];
+    $periodLabel=['7d'=>'7 ngày qua','30d'=>'30 ngày qua','12m'=>'12 tháng qua'][$range];
+    admin_title('Thống kê doanh thu ('.$periodLabel.')','Phân tách giá trị đơn phát sinh (theo ngày đặt) và tiền đã xác nhận nhận (theo ngày đối soát BANK / thu tiền COD).');
+    echo '<div class="alert info">Lưu ý kế toán: Số liệu <strong>Tiền đã xác nhận nhận</strong> là doanh thu gộp đã thu theo ngày xác nhận thực tế (<code>payment_verified_at</code> / <code>cod_paid_at</code>), <strong>không phải lợi nhuận</strong> (chưa trừ giá vốn/chi phí) và <strong>chưa phản ánh các khoản hoàn tiền</strong> nếu có xử lý hoàn tiền thủ công ngoài hệ thống.</div>';
+    if ($report['missing_timestamp_count']>0) {
+        echo '<div class="payment-alert"><strong>Dữ liệu lịch sử thiếu mốc thời gian đối soát:</strong> Có <strong>'.(int)$report['missing_timestamp_count'].'</strong> đơn đã đánh dấu PAID (tổng '.money((int)$report['missing_timestamp_total']).') nhưng không có <code>payment_verified_at</code> / <code>cod_paid_at</code>. Hệ thống không tự lấy ngày đặt hàng làm ngày thu tiền.</div>';
+    }
+    echo '<div class="stats">';
+    stat_card('Tiền đã xác nhận nhận ('.$periodLabel.')',money((int)$t['paid_total']),'BANK đã đối soát: '.money((int)$t['bank_paid']).' · COD đã thu: '.money((int)$t['cod_paid']),'success');
+    stat_card('Tiền BANK đã đối soát',money((int)$t['bank_paid']),'Tính theo payment_verified_at','success');
+    stat_card('Tiền COD đã xác nhận thu',money((int)$t['cod_paid']),'Tính theo cod_paid_at','info');
+    stat_card('Giá trị đơn phát sinh',money((int)$t['ordered_total']),(int)$t['active_orders'].' đơn chưa hủy (theo created_at)');
+    stat_card('Khoản chưa thanh toán',money((int)$t['unpaid_total']),'BANK chờ TT: '.money((int)$t['bank_unpaid']).' · COD chưa thu: '.money((int)$t['cod_unpaid']),'warning');
     echo '</div>';
-    echo '<div class="surface admin-grid--spaced"><h2>Chi tiết theo tháng</h2>';
-    admin_table_start(['Tháng','Số đơn chưa hủy','Doanh thu thực nhận (PAID)','BANK đã đối soát','COD đã thu','Chưa thanh toán']);
-    foreach (rows(
-        "SELECT DATE_FORMAT(created_at,'%Y-%m') AS month,
-                SUM(order_status<>'CANCELLED') AS n,
-                COALESCE(SUM(CASE WHEN payment_status='PAID' THEN total_amount ELSE 0 END),0) AS paid,
-                COALESCE(SUM(CASE WHEN payment_status='PAID' AND payment_method='BANK' THEN total_amount ELSE 0 END),0) AS bank_paid,
-                COALESCE(SUM(CASE WHEN payment_status='PAID' AND payment_method='COD' THEN total_amount ELSE 0 END),0) AS cod_paid,
-                COALESCE(SUM(CASE WHEN payment_status='UNPAID' AND order_status<>'CANCELLED' THEN total_amount ELSE 0 END),0) AS unpaid
-         FROM tbl_orders GROUP BY DATE_FORMAT(created_at,'%Y-%m') ORDER BY month DESC LIMIT 12"
-    ) as $m) {
-        echo '<tr><td><strong>'.h($m['month']).'</strong></td><td>'.(int)$m['n'].'</td><td><strong>'.money((int)$m['paid']).'</strong></td><td>'.money((int)$m['bank_paid']).'</td><td>'.money((int)$m['cod_paid']).'</td><td>'.money((int)$m['unpaid']).'</td></tr>';
+    echo '<div class="surface chart-panel">';
+    render_revenue_chart($range,'revenue',$report);
+    echo '</div>';
+    echo '<div class="surface admin-grid--spaced"><h2>Chi tiết theo kỳ (khớp biểu đồ · '.$periodLabel.')</h2>';
+    admin_table_start(['Kỳ (Ngày/Tháng)','Đơn phát sinh (chưa hủy)','Giá trị đơn phát sinh','BANK đã đối soát','COD đã thu','Tổng thực nhận (PAID)','Chưa thanh toán']);
+    foreach (array_reverse($report['series']) as $m) {
+        echo '<tr><td><strong>'.h($m['bucket']).'</strong></td><td>'.(int)$m['active_orders'].'</td><td>'.money((int)$m['ordered_total']).'</td><td>'.money((int)$m['bank_paid']).'</td><td>'.money((int)$m['cod_paid']).'</td><td><strong>'.money((int)$m['paid_total']).'</strong></td><td>'.money((int)$m['unpaid_total']).'</td></tr>';
     }
     admin_table_end();
+    if (!$report['series']) echo '<p class="hint">Chưa có dữ liệu trong khoảng thời gian đã chọn.</p>';
     echo '</div>';
 }
 elseif ($page==='recommendations') {

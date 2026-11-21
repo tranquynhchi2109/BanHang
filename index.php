@@ -200,14 +200,29 @@ try {
                     run('INSERT INTO tbl_orders(order_code,user_id,customer_name,phone,delivery_address,note,total_amount,payment_method)
                          VALUES (?,?,?,?,?,?,?,?)',[$code,$user['id_dangky'],$name,$phone,$address,$note,$total,$payment]);
                     $orderId=(int)db()->lastInsertId();
+                    if ($payment === 'BANK') {
+                        save_order_payment_snapshot($orderId, $code, $total);
+                    }
                     foreach ($lines as $line) {
                         run('INSERT INTO tbl_order_items(order_id,product_id,product_name,variant_label,unit_price,quantity) VALUES (?,?,?,?,?,?)',
                             [$orderId,$line['id'],$line['name'],$line['variant'],$line['price'],$line['qty']]);
                     }
                     foreach ($requested as $id=>$quantity) {
+                        $before = (int)$productMap[$id]['soluong'];
                         $changed=run('UPDATE tbl_sanpham SET soluong=soluong-? WHERE id_sanpham=? AND soluong>=?',
                             [$quantity,$id,$quantity]);
                         if ($changed!==1) throw new RuntimeException('Không thể cập nhật kho.');
+                        record_inventory_movement(
+                            $id,
+                            $orderId,
+                            'ORDER_DEDUCT',
+                            -$quantity,
+                            $before,
+                            $before - $quantity,
+                            "Trừ tồn kho khi khách đặt đơn {$code}",
+                            'CUSTOMER',
+                            (int)$user['id_dangky']
+                        );
                     }
                     $orderLink = link_to('order',['code'=>$code]);
                     $initNote = $payment === 'BANK'
@@ -233,7 +248,6 @@ try {
                     if (db()->inTransaction()) db()->rollBack();
                     throw $e;
                 }
-                dispatch_email_outbox(5);
                 unset($_SESSION['cart']);
                 notice('Đơn hàng đã được ghi nhận.','success');
                 redirect_to(link_to('order',['code'=>$code]));

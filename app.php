@@ -613,7 +613,6 @@ function confirm_bank_transfer(int $orderId, int $adminId, string $reference, in
             throw new DomainException('Mã giao dịch đã được sử dụng. Kiểm tra sao kê và các đơn đã xác nhận.');
         throw $e;
     }
-    dispatch_email_outbox(5);
 }
 
 function reject_bank_report(int $orderId, int $adminId, string $reason): void
@@ -648,7 +647,6 @@ function reject_bank_report(int $orderId, int $adminId, string $reason): void
         if (db()->inTransaction()) db()->rollBack();
         throw $e;
     }
-    dispatch_email_outbox(5);
 }
 
 function expire_unpaid_bank_order(int $orderId, int $adminId): void
@@ -662,10 +660,31 @@ function expire_unpaid_bank_order(int $orderId, int $adminId): void
             throw new DomainException('Chỉ hủy thủ công đơn chuyển khoản chờ xử lý trên 24 giờ.');
         if ($order['payment_review_status']==='REPORTED')
             throw new DomainException('Khách đã báo chuyển khoản. Phải đối soát ngân hàng trước khi hủy.');
-        $items=rows('SELECT product_id,quantity FROM tbl_order_items WHERE order_id=?',[$orderId]);
+        $items=rows('SELECT product_id,quantity FROM tbl_order_items WHERE order_id=? ORDER BY product_id ASC',[$orderId]);
+        $restoreByProduct=[];
         foreach ($items as $item) {
-            run('UPDATE tbl_sanpham SET soluong=soluong+? WHERE id_sanpham=?',
-                [(int)$item['quantity'],(int)$item['product_id']]);
+            $pid=(int)$item['product_id'];
+            $restoreByProduct[$pid]=($restoreByProduct[$pid]??0)+(int)$item['quantity'];
+        }
+        ksort($restoreByProduct,SORT_NUMERIC);
+        foreach ($restoreByProduct as $pid=>$qty) {
+            $prod=row('SELECT id_sanpham,soluong FROM tbl_sanpham WHERE id_sanpham=? FOR UPDATE',[$pid]);
+            if ($prod) {
+                $before=(int)$prod['soluong'];
+                $after=$before+$qty;
+                run('UPDATE tbl_sanpham SET soluong=soluong+? WHERE id_sanpham=?',[$qty,$pid]);
+                record_inventory_movement(
+                    $pid,
+                    $orderId,
+                    'ORDER_CANCEL_RESTORE',
+                    $qty,
+                    $before,
+                    $after,
+                    "Hoàn kho khi hủy thủ công đơn quá hạn 24h {$order['order_code']}",
+                    'ADMIN',
+                    $adminId
+                );
+            }
         }
         $reason = 'Đơn hàng chuyển khoản chưa thanh toán quá 24 giờ và đã được hủy thủ công.';
         run("UPDATE tbl_orders SET order_status='CANCELLED', cancel_reason=? WHERE id=?",[$reason, $orderId]);
@@ -688,7 +707,6 @@ function expire_unpaid_bank_order(int $orderId, int $adminId): void
         if (db()->inTransaction()) db()->rollBack();
         throw $e;
     }
-    dispatch_email_outbox(5);
 }
 
 function safe_image(string $filename, string $kind = 'product'): string
@@ -752,17 +770,22 @@ function setting(string $key, string $default = ''): string
     $stored = (string)($result['setting_value'] ?? '');
     return $stored !== '' ? $stored : $default;
 }
-function qr_link(array $order): ?string
+function qr_link(array $order, ?array $snapshot = null): ?string
 {
-    $bank = setting('bank_id');
-    $account = setting('bank_account');
+    $snap = $snapshot ?? order_payment_snapshot((int)($order['id'] ?? 0));
+    if (!$snap) return null;
+    $bank = trim((string)($snap['bank_id'] ?? ''));
+    $account = trim((string)($snap['bank_account'] ?? ''));
     if (!preg_match('/^[A-Za-z0-9]{2,15}$/', $bank) || !preg_match('/^[0-9]{6,24}$/', $account)) return null;
+    $amount = (int)($snap['expected_amount'] ?? ($order['total_amount'] ?? 0));
+    $transferContent = trim((string)($snap['transfer_content'] ?? ''));
+    if ($amount <= 0 || $transferContent === '') return null;
     $params = [
-        'amount' => (int)$order['total_amount'],
-        'addInfo' => 'BANHANG ' . $order['order_code'],
+        'amount' => $amount,
+        'addInfo' => $transferContent,
     ];
-    // VietQR accepts accountName as optional; never invent the beneficiary name.
-    $accountName = trim(setting('bank_name'));
+    // VietQR accepts accountName as optional; strictly use snapshot value, never invent.
+    $accountName = trim((string)($snap['bank_account_name'] ?? ''));
     if ($accountName !== '') $params['accountName'] = $accountName;
     $args = http_build_query($params, '', '&', PHP_QUERY_RFC3986);
     return 'https://img.vietqr.io/image/' . rawurlencode($bank) . '-' . rawurlencode($account) . '-compact2.png?' . $args;

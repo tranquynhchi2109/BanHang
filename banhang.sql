@@ -384,10 +384,56 @@ SET @bh_index_sql=IF(@bh_index_exists=0,
   'ALTER TABLE tbl_email_outbox ADD INDEX idx_outbox_retry (status,attempts,next_retry_at)','SELECT 1');
 PREPARE bh_idx FROM @bh_index_sql; EXECUTE bh_idx; DEALLOCATE PREPARE bh_idx;
 
+-- Immutable per-order VietQR payment snapshot (new BANK orders freeze recipient details at checkout).
+-- Existing legacy orders without a snapshot are NOT backfilled with current settings.
+CREATE TABLE IF NOT EXISTS tbl_order_payment_details (
+  order_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+  bank_id VARCHAR(20) NOT NULL,
+  bank_account VARCHAR(30) NOT NULL,
+  bank_account_name VARCHAR(160) NOT NULL DEFAULT '',
+  expected_amount BIGINT UNSIGNED NOT NULL,
+  transfer_content VARCHAR(64) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_banhang_payment_details_order FOREIGN KEY (order_id) REFERENCES tbl_orders(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Inventory movement ledger (shared product-level stock at tbl_sanpham.soluong).
+CREATE TABLE IF NOT EXISTS tbl_inventory_movements (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  product_id INT NOT NULL,
+  order_id BIGINT UNSIGNED NULL,
+  movement_type ENUM('INITIAL','ADJUSTMENT','ORDER_DEDUCT','ORDER_CANCEL_RESTORE') NOT NULL,
+  delta INT NOT NULL,
+  stock_before INT NOT NULL,
+  stock_after INT NOT NULL,
+  reason VARCHAR(300) NOT NULL DEFAULT '',
+  actor_type ENUM('CUSTOMER','ADMIN','SYSTEM') NOT NULL DEFAULT 'ADMIN',
+  actor_id INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_inv_product_time (product_id,created_at),
+  INDEX idx_inv_order (order_id),
+  CONSTRAINT fk_banhang_inv_order FOREIGN KEY (order_id) REFERENCES tbl_orders(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Indexes to support revenue reporting by actual verification timestamps.
+SET @bh_index_exists=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+  WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND INDEX_NAME='idx_orders_bank_verified');
+SET @bh_index_sql=IF(@bh_index_exists=0,
+  'ALTER TABLE tbl_orders ADD INDEX idx_orders_bank_verified (payment_method,payment_status,payment_verified_at)','SELECT 1');
+PREPARE bh_idx FROM @bh_index_sql; EXECUTE bh_idx; DEALLOCATE PREPARE bh_idx;
+
+SET @bh_index_exists=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+  WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND INDEX_NAME='idx_orders_cod_paid');
+SET @bh_index_sql=IF(@bh_index_exists=0,
+  'ALTER TABLE tbl_orders ADD INDEX idx_orders_cod_paid (payment_method,payment_status,cod_paid_at)','SELECT 1');
+PREPARE bh_idx FROM @bh_index_sql; EXECUTE bh_idx; DEALLOCATE PREPARE bh_idx;
+
 SELECT 'tbl_sanpham' AS bang,COUNT(*) AS so_dong FROM tbl_sanpham
 UNION ALL SELECT 'tbl_orders',COUNT(*) FROM tbl_orders
 UNION ALL SELECT 'tbl_order_items',COUNT(*) FROM tbl_order_items
 UNION ALL SELECT 'tbl_product_variants',COUNT(*) FROM tbl_product_variants
+UNION ALL SELECT 'tbl_order_payment_details',COUNT(*) FROM tbl_order_payment_details
+UNION ALL SELECT 'tbl_inventory_movements',COUNT(*) FROM tbl_inventory_movements
 UNION ALL SELECT 'tbl_notifications',COUNT(*) FROM tbl_notifications
 UNION ALL SELECT 'tbl_order_status_history',COUNT(*) FROM tbl_order_status_history
 UNION ALL SELECT 'tbl_email_outbox',COUNT(*) FROM tbl_email_outbox;

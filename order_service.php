@@ -2,9 +2,125 @@
 declare(strict_types=1);
 
 /**
- * BanHang Order Workflow, Timeline & Customer Note Service.
+ * BanHang Order Workflow, Inventory Ledger, VietQR Snapshot, Timeline & Revenue Service.
  * Loaded by app.php; direct HTTP access is denied via .htaccess.
  */
+
+function bank_display_label(string $bankId): string
+{
+    $code = strtoupper(trim($bankId));
+    if (in_array($code, ['970422', 'MB', 'MBBANK'], true)) {
+        return 'MB Bank (Ngân hàng Quân đội)';
+    }
+    return $bankId !== '' ? $bankId : 'Ngân hàng nhận chuyển khoản';
+}
+
+function save_order_payment_snapshot(int $orderId, string $orderCode, int $totalAmount): array
+{
+    $bankId = strtoupper(trim(setting('bank_id')));
+    $bankAccount = trim(setting('bank_account'));
+    $bankName = trim(setting('bank_name'));
+    if (!preg_match('/^[A-Z0-9]{2,15}$/', $bankId) || !preg_match('/^[0-9]{6,24}$/', $bankAccount)) {
+        throw new DomainException('Cửa hàng chưa cấu hình tài khoản ngân hàng hợp lệ để tạo đơn chuyển khoản.');
+    }
+    if ($totalAmount <= 0) {
+        throw new DomainException('Số tiền chuyển khoản của đơn hàng không hợp lệ.');
+    }
+    $transferContent = 'BANHANG ' . $orderCode;
+    run(
+        'INSERT INTO tbl_order_payment_details(order_id,bank_id,bank_account,bank_account_name,expected_amount,transfer_content)
+         VALUES (?,?,?,?,?,?)',
+        [$orderId, $bankId, $bankAccount, $bankName, $totalAmount, $transferContent]
+    );
+    return [
+        'order_id' => $orderId,
+        'bank_id' => $bankId,
+        'bank_account' => $bankAccount,
+        'bank_account_name' => $bankName,
+        'expected_amount' => $totalAmount,
+        'transfer_content' => $transferContent,
+    ];
+}
+
+/**
+ * Returns immutable VietQR payment snapshot for an order, or null for legacy orders
+ * created before per-order snapshots existed (never silently substitutes current settings).
+ */
+function order_payment_snapshot(int $orderId): ?array
+{
+    if ($orderId < 1) return null;
+    return row(
+        'SELECT order_id,bank_id,bank_account,bank_account_name,expected_amount,transfer_content,created_at
+         FROM tbl_order_payment_details WHERE order_id=? LIMIT 1',
+        [$orderId]
+    );
+}
+
+function record_inventory_movement(
+    int $productId,
+    ?int $orderId,
+    string $movementType,
+    int $delta,
+    int $stockBefore,
+    int $stockAfter,
+    string $reason,
+    string $actorType,
+    int $actorId
+): void {
+    run(
+        'INSERT INTO tbl_inventory_movements(product_id,order_id,movement_type,delta,stock_before,stock_after,reason,actor_type,actor_id)
+         VALUES (?,?,?,?,?,?,?,?,?)',
+        [$productId, $orderId, $movementType, $delta, $stockBefore, $stockAfter, mb_substr(trim($reason), 0, 300), $actorType, $actorId]
+    );
+}
+
+/**
+ * Atomic, race-safe inventory adjustment with InnoDB FOR UPDATE lock + optional optimistic check.
+ * Stock is shared per product at tbl_sanpham.soluong (not per phone capacity variant).
+ */
+function adjust_product_stock(
+    int $productId,
+    int $delta,
+    string $reason,
+    int $adminId,
+    ?int $expectedStock = null
+): array {
+    $reason = trim($reason);
+    if ($delta === 0 || abs($delta) > 1000000) {
+        throw new DomainException('Số lượng điều chỉnh tồn kho phải khác 0 và trong giới hạn cho phép.');
+    }
+    if (mb_strlen($reason) < 3 || mb_strlen($reason) > 300 || preg_match('/[\x00-\x1F\x7F]/', $reason)) {
+        throw new DomainException('Vui lòng nhập lý do điều chỉnh tồn kho (3–300 ký tự).');
+    }
+
+    db()->beginTransaction();
+    try {
+        $prod = row('SELECT id_sanpham,tensanpham,soluong FROM tbl_sanpham WHERE id_sanpham=? FOR UPDATE', [$productId]);
+        if (!$prod) throw new DomainException('Không tìm thấy sản phẩm để điều chỉnh tồn kho.');
+
+        $before = (int)$prod['soluong'];
+        if ($expectedStock !== null && $before !== $expectedStock) {
+            throw new DomainException("Tồn kho thực tế hiện là {$before} (khác mức {$expectedStock} bạn đang xem do có đơn hàng hoặc điều chỉnh khác). Vui lòng tải lại trang rồi thao tác lại.");
+        }
+        $after = $before + $delta;
+        if ($after < 0) {
+            throw new DomainException("Không thể điều chỉnh tồn kho xuống âm (hiện còn {$before}, yêu cầu thay đổi {$delta}).");
+        }
+        $changed = run(
+            'UPDATE tbl_sanpham SET soluong = soluong + ? WHERE id_sanpham=? AND soluong + ? >= 0',
+            [$delta, $productId, $delta]
+        );
+        if ($changed !== 1) {
+            throw new RuntimeException('Không thể cập nhật tồn kho sản phẩm.');
+        }
+        record_inventory_movement($productId, null, 'ADJUSTMENT', $delta, $before, $after, $reason, 'ADMIN', $adminId);
+        db()->commit();
+        return ['product_id' => $productId, 'before' => $before, 'after' => $after, 'delta' => $delta];
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        throw $e;
+    }
+}
 
 function admin_send_order_notification(int $customerId, int $orderId, int $adminId, string $title, string $message): void
 {
@@ -113,6 +229,10 @@ function build_order_timeline(array $order, array $publicHistory): array
     return $timeline;
 }
 
+/**
+ * Updates order status in a single DB transaction, restores stock once on CANCELLED,
+ * writes history & customer notification, and enqueues email outbox (never sends SMTP inline).
+ */
 function update_order_status(int $orderId, int $adminId, string $next, array $options = []): array
 {
     $carrier = trim((string)($options['shipping_carrier'] ?? ''));
@@ -129,7 +249,6 @@ function update_order_status(int $orderId, int $adminId, string $next, array $op
         throw new DomainException('Đơn vị vận chuyển hoặc mã vận đơn chứa ký tự không hợp lệ.');
     }
 
-    $emailPayload = null;
     db()->beginTransaction();
     try {
         $order = row('SELECT * FROM tbl_orders WHERE id=? FOR UPDATE', [$orderId]);
@@ -155,9 +274,31 @@ function update_order_status(int $orderId, int $adminId, string $next, array $op
             if ($cancelReason === '') {
                 $cancelReason = $customerNote !== '' ? $customerNote : 'Đơn hàng được hủy theo yêu cầu quản trị.';
             }
-            $items = rows('SELECT product_id,quantity FROM tbl_order_items WHERE order_id=?', [$orderId]);
+            $items = rows('SELECT product_id,quantity FROM tbl_order_items WHERE order_id=? ORDER BY product_id ASC', [$orderId]);
+            $restoreByProduct = [];
             foreach ($items as $item) {
-                run('UPDATE tbl_sanpham SET soluong=soluong+? WHERE id_sanpham=?', [(int)$item['quantity'], (int)$item['product_id']]);
+                $pid = (int)$item['product_id'];
+                $restoreByProduct[$pid] = ($restoreByProduct[$pid] ?? 0) + (int)$item['quantity'];
+            }
+            ksort($restoreByProduct, SORT_NUMERIC);
+            foreach ($restoreByProduct as $pid => $qty) {
+                $prod = row('SELECT id_sanpham,soluong FROM tbl_sanpham WHERE id_sanpham=? FOR UPDATE', [$pid]);
+                if ($prod) {
+                    $before = (int)$prod['soluong'];
+                    $after = $before + $qty;
+                    run('UPDATE tbl_sanpham SET soluong = soluong + ? WHERE id_sanpham=?', [$qty, $pid]);
+                    record_inventory_movement(
+                        $pid,
+                        $orderId,
+                        'ORDER_CANCEL_RESTORE',
+                        $qty,
+                        $before,
+                        $after,
+                        "Hoàn kho khi hủy đơn {$order['order_code']}: {$cancelReason}",
+                        'ADMIN',
+                        $adminId
+                    );
+                }
             }
         }
 
@@ -244,22 +385,20 @@ function update_order_status(int $orderId, int $adminId, string $next, array $op
 
         $updatedOrder = row('SELECT * FROM tbl_orders WHERE id=?', [$orderId]);
         queue_order_email($updatedOrder, $mailEvent, $publicNote, "email_status:{$orderId}:{$next}");
-        $emailPayload = $updatedOrder;
 
         db()->commit();
+        return $updatedOrder;
     } catch (Throwable $e) {
         if (db()->inTransaction()) db()->rollBack();
         throw $e;
     }
-
-    dispatch_email_outbox(5);
-    return $emailPayload;
 }
 
 /**
  * Save admin shipping info, customer-visible note and internal admin note.
- * - Detects shipping changes and customer_note changes independently.
- * - Sends deduplicated customer notifications ONLY when customer-visible values actually change.
+ * - Uses per-event idempotency key (`event_key`) instead of content hash so A -> B -> A
+ *   creates 3 valid notifications while retries of the same event_key never duplicate.
+ * - Handles clearing customer_note/shipping explicitly so customers aren't misled by stale notes.
  * - NEVER exposes admin_note to customers or public history.
  */
 function save_order_notes(int $orderId, int $adminId, array $data): array
@@ -268,6 +407,8 @@ function save_order_notes(int $orderId, int $adminId, array $data): array
     $tracking = trim((string)($data['tracking_code'] ?? ''));
     $adminNote = trim((string)($data['admin_note'] ?? ''));
     $customerNote = trim((string)($data['customer_note'] ?? ''));
+    $rawEventKey = trim((string)($data['event_key'] ?? ''));
+
     if (mb_strlen($carrier) > 100 || mb_strlen($tracking) > 100 || mb_strlen($adminNote) > 500 || mb_strlen($customerNote) > 500) {
         throw new DomainException('Ghi chú hoặc thông tin vận chuyển vượt giới hạn.');
     }
@@ -277,8 +418,12 @@ function save_order_notes(int $orderId, int $adminId, array $data): array
     if (preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $adminNote . $customerNote)) {
         throw new DomainException('Ghi chú chứa ký tự điều khiển không hợp lệ.');
     }
+    if ($rawEventKey !== '' && !preg_match('/^[A-Za-z0-9_\-:]{8,64}$/', $rawEventKey)) {
+        throw new DomainException('Mã sự kiện cập nhật không hợp lệ.');
+    }
+    $eventKey = $rawEventKey !== '' ? $rawEventKey : bin2hex(random_bytes(12));
 
-    $result = ['changed' => false, 'shipping_notified' => false, 'customer_note_notified' => false];
+    $result = ['changed' => false, 'duplicate_retry' => false, 'shipping_notified' => false, 'customer_note_notified' => false];
     db()->beginTransaction();
     try {
         $order = row(
@@ -287,6 +432,22 @@ function save_order_notes(int $orderId, int $adminId, array $data): array
             [$orderId]
         );
         if (!$order) throw new DomainException('Không tìm thấy đơn hàng.');
+
+        $shipDedup = "order_ship:{$orderId}:{$eventKey}";
+        $noteDedup = "order_cnote:{$orderId}:{$eventKey}";
+
+        // Guard against retry of the exact same event_key
+        if ($rawEventKey !== '') {
+            $alreadyProcessed = row(
+                'SELECT id FROM tbl_notifications WHERE dedup_key IN (?, ?) LIMIT 1',
+                [$shipDedup, $noteDedup]
+            );
+            if ($alreadyProcessed) {
+                db()->commit();
+                $result['duplicate_retry'] = true;
+                return $result;
+            }
+        }
 
         $oldCarrier = trim((string)($order['shipping_carrier'] ?? ''));
         $oldTracking = trim((string)($order['tracking_code'] ?? ''));
@@ -327,10 +488,20 @@ function save_order_notes(int $orderId, int $adminId, array $data): array
                     'Cập nhật thông tin vận chuyển',
                     "Đơn hàng {$order['order_code']} đã cập nhật thông tin vận chuyển. {$detail}",
                     $orderLink,
-                    'order_track:' . $orderId . ':' . sha1($carrier . '|' . $tracking)
+                    $shipDedup
                 );
             } else {
-                record_order_history($orderId, null, 'SHIPPING_UPDATED', 'ADMIN', $adminId, 'Đã xóa thông tin vận chuyển trên đơn.', false);
+                $clearMsg = 'Thông tin vận chuyển trước đó của đơn hàng đã được cửa hàng gỡ bỏ/cập nhật lại.';
+                record_order_history($orderId, null, 'SHIPPING_UPDATED', 'ADMIN', $adminId, $clearMsg, true);
+                $result['shipping_notified'] = create_notification(
+                    $userId,
+                    $orderId,
+                    'ORDER_SHIPPING_INFO',
+                    'Cập nhật thông tin vận chuyển',
+                    "Đơn hàng {$order['order_code']}: {$clearMsg}",
+                    $orderLink,
+                    $shipDedup
+                );
             }
         }
 
@@ -344,10 +515,20 @@ function save_order_notes(int $orderId, int $adminId, array $data): array
                     'Ghi chú mới cho đơn hàng',
                     "Cửa hàng vừa gửi ghi chú mới cho đơn hàng {$order['order_code']}: {$customerNote}",
                     $orderLink,
-                    'order_cnote:' . $orderId . ':' . sha1($customerNote)
+                    $noteDedup
                 );
             } else {
-                record_order_history($orderId, null, 'CUSTOMER_NOTE', 'ADMIN', $adminId, 'Đã xóa ghi chú gửi khách.', false);
+                $clearNoteMsg = 'Cửa hàng đã gỡ bỏ ghi chú trước đó của đơn hàng.';
+                record_order_history($orderId, null, 'CUSTOMER_NOTE', 'ADMIN', $adminId, $clearNoteMsg, true);
+                $result['customer_note_notified'] = create_notification(
+                    $userId,
+                    $orderId,
+                    'ORDER_CUSTOMER_NOTE',
+                    'Ghi chú đơn hàng đã được cập nhật',
+                    "Đơn hàng {$order['order_code']}: {$clearNoteMsg}",
+                    $orderLink,
+                    $noteDedup
+                );
             }
         }
 
@@ -359,6 +540,10 @@ function save_order_notes(int $orderId, int $adminId, array $data): array
     }
 }
 
+/**
+ * Explicit Admin confirmation that COD cash has been collected.
+ * Queues email in outbox (never sends SMTP inline).
+ */
 function confirm_cod_payment(int $orderId, int $adminId, string $note = ''): void
 {
     $note = trim($note);
@@ -397,5 +582,135 @@ function confirm_cod_payment(int $orderId, int $adminId, string $note = ''): voi
         if (db()->inTransaction()) db()->rollBack();
         throw $e;
     }
-    dispatch_email_outbox(5);
+}
+
+/**
+ * Unified revenue report used by BOTH charts and tables in Admin.
+ * - Ordered value & unpaid balance are grouped by `created_at`.
+ * - Verified BANK cash received is grouped strictly by `payment_verified_at`.
+ * - Verified COD cash collected is grouped strictly by `cod_paid_at`.
+ * - Legacy PAID rows without verification timestamp are audited separately (never faked with created_at).
+ */
+function revenue_report_data(string $range = '30d'): array
+{
+    $range = in_array($range, ['7d', '30d', '12m'], true) ? $range : '30d';
+    if ($range === '12m') {
+        $fmt = '%Y-%m';
+        $cutoffExpr = "DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 11 MONTH), '%Y-%m-01 00:00:00')";
+    } else {
+        $days = $range === '7d' ? 6 : 29;
+        $fmt = '%Y-%m-%d';
+        $cutoffExpr = "DATE_SUB(CURDATE(), INTERVAL {$days} DAY)";
+    }
+
+    $orderedRows = rows(
+        "SELECT DATE_FORMAT(created_at, '{$fmt}') AS bucket,
+                SUM(order_status <> 'CANCELLED') AS active_orders,
+                COALESCE(SUM(CASE WHEN order_status <> 'CANCELLED' THEN total_amount ELSE 0 END), 0) AS ordered_total,
+                COALESCE(SUM(CASE WHEN payment_status = 'UNPAID' AND order_status <> 'CANCELLED' THEN total_amount ELSE 0 END), 0) AS unpaid_total,
+                COALESCE(SUM(CASE WHEN payment_status = 'UNPAID' AND payment_method = 'BANK' AND order_status <> 'CANCELLED' THEN total_amount ELSE 0 END), 0) AS bank_unpaid,
+                COALESCE(SUM(CASE WHEN payment_status = 'UNPAID' AND payment_method = 'COD' AND order_status <> 'CANCELLED' THEN total_amount ELSE 0 END), 0) AS cod_unpaid
+         FROM tbl_orders
+         WHERE created_at >= {$cutoffExpr}
+         GROUP BY DATE_FORMAT(created_at, '{$fmt}')
+         ORDER BY bucket ASC"
+    );
+
+    $bankPaidRows = rows(
+        "SELECT DATE_FORMAT(payment_verified_at, '{$fmt}') AS bucket,
+                COUNT(*) AS paid_count,
+                COALESCE(SUM(total_amount), 0) AS bank_paid
+         FROM tbl_orders
+         WHERE payment_method = 'BANK'
+           AND payment_status = 'PAID'
+           AND payment_verified_at IS NOT NULL
+           AND payment_verified_at >= {$cutoffExpr}
+         GROUP BY DATE_FORMAT(payment_verified_at, '{$fmt}')
+         ORDER BY bucket ASC"
+    );
+
+    $codPaidRows = rows(
+        "SELECT DATE_FORMAT(cod_paid_at, '{$fmt}') AS bucket,
+                COUNT(*) AS paid_count,
+                COALESCE(SUM(total_amount), 0) AS cod_paid
+         FROM tbl_orders
+         WHERE payment_method = 'COD'
+           AND payment_status = 'PAID'
+           AND cod_paid_at IS NOT NULL
+           AND cod_paid_at >= {$cutoffExpr}
+         GROUP BY DATE_FORMAT(cod_paid_at, '{$fmt}')
+         ORDER BY bucket ASC"
+    );
+
+    $buckets = [];
+    $ensure = static function (string $key) use (&$buckets): void {
+        if (!isset($buckets[$key])) {
+            $buckets[$key] = [
+                'bucket' => $key,
+                'active_orders' => 0,
+                'ordered_total' => 0,
+                'bank_paid' => 0,
+                'cod_paid' => 0,
+                'paid_total' => 0,
+                'unpaid_total' => 0,
+                'bank_unpaid' => 0,
+                'cod_unpaid' => 0,
+            ];
+        }
+    };
+
+    foreach ($orderedRows as $r) {
+        $k = (string)$r['bucket'];
+        $ensure($k);
+        $buckets[$k]['active_orders'] = (int)$r['active_orders'];
+        $buckets[$k]['ordered_total'] = (int)$r['ordered_total'];
+        $buckets[$k]['unpaid_total'] = (int)$r['unpaid_total'];
+        $buckets[$k]['bank_unpaid'] = (int)$r['bank_unpaid'];
+        $buckets[$k]['cod_unpaid'] = (int)$r['cod_unpaid'];
+    }
+    foreach ($bankPaidRows as $r) {
+        $k = (string)$r['bucket'];
+        $ensure($k);
+        $buckets[$k]['bank_paid'] = (int)$r['bank_paid'];
+    }
+    foreach ($codPaidRows as $r) {
+        $k = (string)$r['bucket'];
+        $ensure($k);
+        $buckets[$k]['cod_paid'] = (int)$r['cod_paid'];
+    }
+
+    ksort($buckets, SORT_STRING);
+    $totals = [
+        'active_orders' => 0,
+        'ordered_total' => 0,
+        'bank_paid' => 0,
+        'cod_paid' => 0,
+        'paid_total' => 0,
+        'unpaid_total' => 0,
+        'bank_unpaid' => 0,
+        'cod_unpaid' => 0,
+    ];
+    foreach ($buckets as &$b) {
+        $b['paid_total'] = $b['bank_paid'] + $b['cod_paid'];
+        foreach ($totals as $tk => $tv) {
+            $totals[$tk] += $b[$tk];
+        }
+    }
+    unset($b);
+
+    $missingTs = row(
+        "SELECT COUNT(*) AS cnt, COALESCE(SUM(total_amount), 0) AS total
+         FROM tbl_orders
+         WHERE payment_status = 'PAID'
+           AND ((payment_method = 'BANK' AND payment_verified_at IS NULL)
+             OR (payment_method = 'COD' AND cod_paid_at IS NULL))"
+    );
+
+    return [
+        'range' => $range,
+        'series' => array_values($buckets),
+        'totals' => $totals,
+        'missing_timestamp_count' => (int)($missingTs['cnt'] ?? 0),
+        'missing_timestamp_total' => (int)($missingTs['total'] ?? 0),
+    ];
 }
