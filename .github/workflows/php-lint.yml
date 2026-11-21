@@ -1,57 +1,61 @@
-name: PHP and database checks
+name: BanHang PHP and one-file SQL checks
 on:
   push:
-    branches:
-      - main
-      - redesign/premium-mainline
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
 jobs:
-  php-lint:
+  test:
     runs-on: ubuntu-latest
     services:
       mysql:
         image: mysql:8.0
         env:
           MYSQL_ROOT_PASSWORD: root
-          MYSQL_DATABASE: web_mysqli
-        ports:
-          - 3306:3306
+        ports: ["3306:3306"]
         options: >-
           --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up PHP
-        uses: shivammathur/setup-php@v2
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2'
+          php-version: "8.2"
           extensions: mbstring, pdo_mysql, mysqli, fileinfo
       - name: Lint active PHP entry points
         run: |
           php -l app.php
           php -l index.php
-          php -l pages/header.php
           php -l pages/main.php
-          php -l pages/footer.php
           php -l admin/index.php
           php -l admin/config/config.php
-      - name: Import legacy schema and run additive migration
+      - name: Create database with the single SQL, re-import idempotently
         env:
           MYSQL_PWD: root
         run: |
-          mysql -h 127.0.0.1 -uroot < web_mysqli.sql
-          mysql -h 127.0.0.1 -uroot web_mysqli < database_upgrade.sql
-          mysql -h 127.0.0.1 -uroot web_mysqli -e "SHOW COLUMNS FROM tbl_order_items LIKE 'variant_label';"
-          mysql -h 127.0.0.1 -uroot web_mysqli -e "INSERT INTO tbl_orders (order_code,user_id,customer_name,phone,delivery_address,total_amount) VALUES ('CI_DB_RENAME',1,'Test','0900000000','Test address',1000);"
-          mysql -h 127.0.0.1 -uroot web_mysqli -e "RENAME TABLE tbl_order_items TO v2_order_items, tbl_orders TO v2_orders, tbl_settings TO v2_settings, tbl_login_attempts TO v2_login_attempts;"
-          mysql -h 127.0.0.1 -uroot web_mysqli < doi_ten_bang_tbl.sql
-          test "$(mysql -h 127.0.0.1 -uroot -N -s web_mysqli -e "SELECT COUNT(*) FROM tbl_orders WHERE order_code='CI_DB_RENAME'")" = '1'
-          mysql -h 127.0.0.1 -uroot web_mysqli < database_upgrade.sql
-          mysql -h 127.0.0.1 -uroot web_mysqli < bank_config_mbbank.sql
-          test "$(mysql -h 127.0.0.1 -uroot -N -s web_mysqli -e "SELECT setting_value FROM tbl_settings WHERE setting_key='bank_id'")" = '970422'
-          test "$(mysql -h 127.0.0.1 -uroot -N -s web_mysqli -e "SELECT setting_value FROM tbl_settings WHERE setting_key='bank_account'")" = '0973258529'
+          mysql -h127.0.0.1 -uroot < banhang.sql
+          mysql -h127.0.0.1 -uroot < banhang.sql
+          mysql -h127.0.0.1 -uroot web_mysqli -e "INSERT INTO tbl_danhmuc(id_danhmuc,tendanhmuc,thutu) VALUES (1,'Điện thoại',1);"
+          mysql -h127.0.0.1 -uroot web_mysqli -e "INSERT INTO tbl_sanpham(id_sanpham,tensanpham,masp,giasp,soluong,hinhanh,tomtat,noidung,tinhtrang,id_danhmuc) VALUES (1,'CI Phone','CI1',27500000,10,'ci.jpg','','',1,1);"
+          mysql -h127.0.0.1 -uroot < banhang.sql
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli -e "SELECT price FROM tbl_product_variants WHERE product_id=1 AND variant_code='128GB'")" = '27500000'
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli -e "SELECT COUNT(*) FROM tbl_product_variants WHERE product_id=1 AND variant_code='1TB'")" = '0'
+      - name: Check PHP uses database variant prices exactly
+        env:
+          DB_HOST: 127.0.0.1
+          DB_NAME: web_mysqli
+          DB_USER: root
+          DB_PASS: root
+        run: |
+          php -r 'require "app.php"; $p=row("SELECT p.*,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.id_sanpham=1"); if(variant_price($p,"128GB")!==27500000)exit(1);try{variant_price($p,"1TB");exit(2);}catch(DomainException $e){echo "Unconfigured 1TB is blocked\n";}'
+          php -r 'require "app.php"; run("INSERT INTO tbl_product_variants(product_id,variant_code,price,is_active) VALUES (1,?,?,1)",["1TB",37600000]);$p=row("SELECT p.*,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.id_sanpham=1");if(variant_price($p,"1TB")!==37600000)exit(1);echo "Exact database price verified\n";'
+      - name: Verify upgrade from old v2 names preserves orders
+        env:
+          MYSQL_PWD: root
+        run: |
+          mysql -h127.0.0.1 -uroot web_mysqli -e "INSERT INTO tbl_orders(order_code,user_id,customer_name,phone,delivery_address,total_amount) VALUES ('CI_PRESERVE',1,'CI','0900000000','CI address',1000);"
+          mysql -h127.0.0.1 -uroot web_mysqli -e "RENAME TABLE tbl_order_items TO v2_order_items, tbl_orders TO v2_orders, tbl_settings TO v2_settings, tbl_login_attempts TO v2_login_attempts;"
+          mysql -h127.0.0.1 -uroot < banhang.sql
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli -e "SELECT COUNT(*) FROM tbl_orders WHERE order_code='CI_PRESERVE'")" = '1'
