@@ -21,7 +21,7 @@ function save_product_upload(?string $previous): string
     if ($extension===null || getimagesize($tmp)===false) throw new DomainException('Chỉ hỗ trợ JPEG, PNG hoặc WebP.');
     $folder=dirname(__DIR__).'/admin/modules/quanlysp/uploads';
     if (!is_dir($folder)) throw new DomainException('Không tìm thấy thư mục upload của dự án gốc.');
-    $filename='v2_'.bin2hex(random_bytes(12)).'.'.$extension;
+    $filename='product_'.bin2hex(random_bytes(12)).'.'.$extension;
     if (!move_uploaded_file($tmp,$folder.'/'.$filename)) throw new RuntimeException('Không thể ghi ảnh lên máy chủ.');
     return $filename;
 }
@@ -38,7 +38,7 @@ function save_news_upload(?string $previous): string
     if ($extension===null || getimagesize($tmp)===false) throw new DomainException('Chỉ hỗ trợ JPEG, PNG hoặc WebP.');
     $folder=dirname(__DIR__).'/admin/modules/quanlybaiviet/uploads';
     if (!is_dir($folder)) throw new DomainException('Không tìm thấy thư mục upload bài viết.');
-    $filename='v2_'.bin2hex(random_bytes(12)).'.'.$extension;
+    $filename='news_'.bin2hex(random_bytes(12)).'.'.$extension;
     if (!move_uploaded_file($tmp,$folder.'/'.$filename)) throw new RuntimeException('Không thể ghi ảnh bài viết.');
     return $filename;
 }
@@ -188,7 +188,7 @@ try {
     };
     redirect_to(admin_to($target));
 } catch (Throwable $e) {
-    error_log('[BanHang v2 admin] '.$e->getMessage());
+    error_log('[BanHang admin] '.$e->getMessage());
     http_response_code(500);
     exit('Không thể xử lý thao tác quản trị. Kiểm tra log máy chủ.');
 }
@@ -259,10 +259,10 @@ if ($page==='dashboard') {
     $customers=row('SELECT COUNT(*) AS n FROM tbl_dangky');
     $products=row('SELECT COUNT(*) AS n FROM tbl_sanpham');
     $pending=row("SELECT COUNT(*) AS n FROM v2_orders WHERE order_status='PENDING'");
-    admin_title('Tổng quan hệ thống','Số liệu cửa hàng và các đơn hàng v2 mới nhất.');
+    admin_title('Tổng quan hệ thống','Số liệu cửa hàng và các đơn hàng mới nhất.');
     echo '<div class="stats">';
     stat_card('Doanh thu ghi nhận',money((int)($income['total']??0)),'Không tính đơn đã hủy');
-    stat_card('Đơn hàng mới',(string)($income['n']??0),'Từ hệ thống v2');
+    stat_card('Đơn hàng mới',(string)($income['n']??0),'Đơn hàng đã ghi nhận');
     stat_card('Khách hàng',(string)($customers['n']??0),'Tài khoản đang lưu');
     stat_card('Sản phẩm',(string)($products['n']??0),'Tất cả trạng thái');
     echo '</div><div class="admin-grid"><div class="surface"><h2>Đơn hàng gần đây</h2>';
@@ -347,8 +347,8 @@ elseif ($page==='order') {
     if (!$order) throw new DomainException('Đơn hàng không tồn tại.');
     admin_title('Đơn hàng '. $order['order_code'],'Kiểm tra thông tin và cập nhật trạng thái.');
     echo '<div class="admin-grid"><div class="surface"><h2>Thông tin đơn hàng</h2><p>Khách hàng: <strong>'.h($order['customer_name']).'</strong></p><p>SĐT: '.h($order['phone']).'</p><p>Địa chỉ: '.h($order['delivery_address']).'</p><p>Ghi chú: '.h($order['note']).'</p><p>Ngày đặt: '.h($order['created_at']).'</p><hr><h3>Sản phẩm</h3>';
-    foreach (rows('SELECT product_name,quantity,unit_price FROM v2_order_items WHERE order_id=?',[$id]) as $item) {
-        echo '<div class="summary-line"><span>'.h($item['product_name']).' × '.(int)$item['quantity'].'</span><strong>'.money((int)$item['unit_price']*(int)$item['quantity']).'</strong></div>';
+    foreach (rows('SELECT product_name,variant_label,quantity,unit_price FROM v2_order_items WHERE order_id=?',[$id]) as $item) {
+        echo '<div class="summary-line"><span>'.h($item['product_name']).($item['variant_label']!=='BASE'?' · '.h($item['variant_label']):'').' × '.(int)$item['quantity'].'</span><strong>'.money((int)$item['unit_price']*(int)$item['quantity']).'</strong></div>';
     }
     echo '<hr><h2>Tổng tiền: '.money((int)$order['total_amount']).'</h2></div>';
     echo '<div class="surface"><h2>Trạng thái xử lý</h2><p><span class="badge">'.h($order['order_status']).'</span></p><p>Thanh toán: <strong>'.h($order['payment_method']).' / '.h($order['payment_status']).'</strong></p>';
@@ -362,7 +362,7 @@ elseif ($page==='order') {
     echo '</div></div>';
 }
 elseif ($page==='customers') {
-    admin_title('Khách hàng','Dữ liệu tài khoản và số đơn v2.');
+    admin_title('Khách hàng','Dữ liệu tài khoản và lịch sử đặt hàng.');
     admin_table_start(['Khách hàng','Email','Số điện thoại','Địa chỉ','Số đơn']);
     foreach (rows('SELECT u.id_dangky,u.tenkhachhang,u.email,u.dienthoai,u.diachi,(SELECT COUNT(*) FROM v2_orders o WHERE o.user_id=u.id_dangky) AS order_count FROM tbl_dangky u ORDER BY u.id_dangky DESC LIMIT 100') as $c)
         echo '<tr><td>'.h($c['tenkhachhang']).'</td><td>'.h($c['email']).'</td><td>'.h($c['dienthoai']).'</td><td>'.h($c['diachi']).'</td><td>'.(int)$c['order_count'].'</td></tr>';
@@ -376,7 +376,7 @@ elseif ($page==='inventory') {
     admin_table_end();
 }
 elseif ($page==='revenue') {
-    admin_title('Thống kê doanh thu','Báo cáo đơn hàng được ghi nhận trong v2.');
+    admin_title('Thống kê doanh thu','Báo cáo đơn hàng của cửa hàng.');
     $total=row("SELECT COALESCE(SUM(total_amount),0) AS total,COUNT(*) AS n FROM v2_orders WHERE order_status<>'CANCELLED'");
     $paid=row("SELECT COALESCE(SUM(total_amount),0) AS total FROM v2_orders WHERE payment_status='PAID'");
     echo '<div class="stats">';
@@ -432,7 +432,7 @@ elseif ($page==='settings') {
 }
 admin_page_foot();
 } catch (Throwable $e) {
-    error_log('[BanHang v2 admin render] '.$e->getMessage());
+    error_log('[BanHang admin render] '.$e->getMessage());
     http_response_code(500);
     echo '<div class="admin-content"><div class="surface"><h2>Có lỗi hiển thị trang quản trị</h2><p>Kiểm tra log, MySQL và migration.</p></div></div>';
     page_foot(true);

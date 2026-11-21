@@ -262,3 +262,10 @@ td{font-size:12px}.timeline{display:flex;justify-content:space-between;gap:8px;f
  .article-grid{grid-template-columns:1fr}
 }
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+
+.variant-picker{margin:22px 0}
+.variant-picker>strong{display:block;font-size:13px;margin-bottom:10px}
+.variant-options{display:flex;flex-wrap:wrap;gap:9px}
+.variant-option{border:1px solid var(--line);border-radius:10px;padding:10px 15px;background:#fff;color:var(--muted);font-size:12px;font-weight:700}
+.variant-option.active{border-color:var(--blue);background:#edf3ff;color:var(--blue)}
+.cart-variant{display:inline-block;margin-top:5px;color:var(--muted);font-size:11px;font-weight:700}

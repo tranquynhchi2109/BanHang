@@ -2,8 +2,8 @@
 declare(strict_types=1);
 
 /**
- * BanHang v2 shared infrastructure.
- * Public front controllers: index.php and admin.php.
+ * BanHang shared infrastructure.
+ * Public front controllers: index.php and admin/index.php.
  * No framework, no composer dependency; PHP 8.2+ and pdo_mysql.
  */
 ini_set('display_errors', '0');
@@ -12,8 +12,10 @@ ini_set('session.use_strict_mode', '1');
 ini_set('session.use_only_cookies', '1');
 $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
 session_name('PHPSESSID');
-$cookiePath = str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/v2/index.php')));
-if ($cookiePath === '.' || $cookiePath === '') $cookiePath = '/';
+$scriptDirectory = str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/index.php')));
+if (preg_match('~/admin$~', $scriptDirectory)) $scriptDirectory = substr($scriptDirectory, 0, -6);
+$cookiePath = rtrim($scriptDirectory, '/');
+if ($cookiePath === '') $cookiePath = '/';
 session_set_cookie_params([
     'lifetime' => 0, 'path' => $cookiePath, 'secure' => $https,
     'httponly' => true, 'samesite' => 'Lax',
@@ -32,7 +34,7 @@ function base_path(): string
 {
     static $base = null;
     if ($base !== null) return $base;
-    $directory = str_replace('\\\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/index.php')));
+    $directory = str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/index.php')));
     if (preg_match('~/admin$~', $directory)) $directory = substr($directory, 0, -6);
     $base = rtrim($directory, '/');
     return $base;
@@ -156,6 +158,38 @@ function current_admin(): ?array
     if (!$id || $id < 1) return null;
     return row('SELECT id_admin,username,admin_status FROM tbl_admin WHERE id_admin=? AND admin_status=1', [$id]);
 }
+function cart_key(int $productId, string $variant = 'BASE'): string
+{
+    $variant = strtoupper(trim($variant));
+    if (!in_array($variant, ['BASE','128GB','256GB','512GB','1TB'], true)) $variant = 'BASE';
+    return $productId . ':' . $variant;
+}
+function parse_cart_key(string|int $key): array
+{
+    $parts = explode(':', (string)$key, 2);
+    $productId = (int)($parts[0] ?? 0);
+    $variant = strtoupper(trim($parts[1] ?? 'BASE'));
+    if (!in_array($variant, ['BASE','128GB','256GB','512GB','1TB'], true)) $variant = 'BASE';
+    return [$productId, $variant];
+}
+function variant_price(array $product, string $variant = 'BASE'): int
+{
+    $base = (int)($product['giasp'] ?? 0);
+    if (($product['tendanhmuc'] ?? '') !== 'Điện thoại') return $base;
+    $extras = ['128GB'=>0, '256GB'=>2000000, '512GB'=>5000000, '1TB'=>10000000];
+    if (!array_key_exists($variant, $extras)) throw new DomainException('Vui lòng chọn dung lượng hợp lệ.');
+    return $base + $extras[$variant];
+}
+function cart_product_quantity(array $cart, int $productId, string $excludeKey = ''): int
+{
+    $total = 0;
+    foreach ($cart as $key => $quantity) {
+        if ((string)$key === $excludeKey) continue;
+        [$id] = parse_cart_key((string)$key);
+        if ($id === $productId) $total += max(0, (int)$quantity);
+    }
+    return $total;
+}
 function migrate_legacy_session(): void
 {
     if (!isset($_SESSION['customer_id']) && isset($_SESSION['id_khachhang'])) {
@@ -172,11 +206,16 @@ function migrate_legacy_session(): void
         if (is_array($item)) {
             $id = (int)($item['id'] ?? 0);
             $quantity = (int)($item['soluong'] ?? 0);
+            $variant = strtoupper(trim((string)($item['dungluong'] ?? 'BASE')));
+            if ($variant === '') $variant = 'BASE';
         } else {
-            $id = (int)$key;
+            [$id, $variant] = parse_cart_key((string)$key);
             $quantity = (int)$item;
         }
-        if ($id > 0 && $quantity > 0) $normalized[$id] = min(20, ($normalized[$id] ?? 0) + $quantity);
+        if ($id > 0 && $quantity > 0) {
+            $normalizedKey = cart_key($id, $variant);
+            $normalized[$normalizedKey] = min(20, ($normalized[$normalizedKey] ?? 0) + $quantity);
+        }
     }
     $_SESSION['cart'] = $normalized;
 }
@@ -257,7 +296,7 @@ function login_admin(string $username, string $password): bool
 }
 function safe_image(string $filename, string $kind = 'product'): string
 {
-    $basename = basename(str_replace('\\\\', '/', $filename));
+    $basename = basename(str_replace('\\', '/', $filename));
     if ($basename === '' || !preg_match('/\\.(?:png|jpe?g|webp)$/i', $basename)) {
         return project_url('images/fallback.svg');
     }
@@ -310,17 +349,19 @@ function page_head(string $title, bool $admin = false): void
 function page_foot(bool $admin = false): void
 {
     if (!$admin) {
-        echo '<footer class="footer"><div class="container footer__grid"><section><h2>BANHANG.</h2><p>Công nghệ dành cho cuộc sống hiện đại.</p></section><section><h3>Mua sắm</h3><a href="' . link_to('products') . '">Sản phẩm</a><a href="' . link_to('cart') . '">Giỏ hàng</a></section><section><h3>Hỗ trợ</h3><a href="' . link_to('orders') . '">Đơn hàng</a><a href="' . link_to('news') . '">Tin tức</a></section><section><h3>Thông tin</h3><p>Giao diện BanHang Premium v2</p></section></div></footer>';
+        echo '<footer class="footer"><div class="container footer__grid"><section><h2>BANHANG.</h2><p>Công nghệ dành cho cuộc sống hiện đại.</p></section><section><h3>Mua sắm</h3><a href="' . link_to('products') . '">Sản phẩm</a><a href="' . link_to('cart') . '">Giỏ hàng</a></section><section><h3>Hỗ trợ</h3><a href="' . link_to('orders') . '">Đơn hàng</a><a href="' . link_to('news') . '">Tin tức</a></section><section><h3>Thông tin</h3><p>Trải nghiệm công nghệ hiện đại.</p></section></div></footer>';
     }
     echo '</body></html>';
 }
 function product_card(array $product): void
 {
     $id = (int)$product['id_sanpham'];
+    $variant = (($product['tendanhmuc'] ?? '') === 'Điện thoại') ? '128GB' : 'BASE';
+    $price = variant_price($product, $variant);
     echo '<article class="product-card"><a class="product-card__image" href="' . link_to('product', ['id' => $id]) . '"><img loading="lazy" src="' . h(safe_image($product['hinhanh'])) . '" alt="' . h($product['tensanpham']) . '"></a>';
     echo '<p class="product-card__cat">' . h($product['tendanhmuc'] ?? 'Công nghệ') . '</p><h3><a href="' . link_to('product', ['id' => $id]) . '">' . h($product['tensanpham']) . '</a></h3>';
-    echo '<p class="rating">★ 4.9 <span>· Sản phẩm chính hãng</span></p><div class="product-card__bottom"><strong>' . money((int)$product['giasp']) . '</strong>';
-    echo '<form action="index.php" method="post">' . csrf_field() . '<input type="hidden" name="action" value="add_cart"><input type="hidden" name="product_id" value="' . $id . '"><input type="hidden" name="qty" value="1">';
+    echo '<p class="rating">★ 4.9 <span>· Sản phẩm chính hãng</span></p><div class="product-card__bottom"><strong>' . money($price) . '</strong>';
+    echo '<form action="' . h(project_url('index.php')) . '" method="post">' . csrf_field() . '<input type="hidden" name="action" value="add_cart"><input type="hidden" name="product_id" value="' . $id . '"><input type="hidden" name="variant" value="' . h($variant) . '"><input type="hidden" name="qty" value="1">';
     echo '<button type="submit" class="icon-button" aria-label="Thêm vào giỏ">＋</button></form></div></article>';
 }
 function form_error(?string $error): void

@@ -67,12 +67,23 @@ elseif ($page==='product') {
     $product=row('SELECT p.*,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON p.id_danhmuc=c.id_danhmuc WHERE p.id_sanpham=? AND p.tinhtrang=1',[$id]);
     if (!$product) {http_response_code(404);page_title('Không tìm thấy sản phẩm');}
     else {
-        echo '<div class="container section"><p class="breadcrumb"><a href="index.php">Trang chủ</a> / '.h($product['tendanhmuc']).' / '.h($product['tensanpham']).'</p>';
+        $isPhone=($product['tendanhmuc']==='Điện thoại');
+        $variant=$isPhone?strtoupper((string)($_GET['variant']??'128GB')):'BASE';
+        if ($isPhone && !in_array($variant,['128GB','256GB','512GB','1TB'],true)) $variant='128GB';
+        $displayPrice=variant_price($product,$variant);
+        echo '<div class="container section"><p class="breadcrumb"><a href="'.h(project_url('index.php')).'">Trang chủ</a> / '.h($product['tendanhmuc']).' / '.h($product['tensanpham']).'</p>';
         echo '<div class="product-detail"><div class="product-detail__photo"><img src="'.h(safe_image($product['hinhanh'])).'" alt="'.h($product['tensanpham']).'"></div><div class="product-detail__info"><span class="badge">CHÍNH HÃNG</span>';
-        echo '<h1>'.h($product['tensanpham']).'</h1><p class="rating">★ 4.9 <span>· Bảo hành theo quy định cửa hàng</span></p><p class="detail-price">'.money((int)$product['giasp']).'</p>';
-        echo '<p>'.nl2br(h(strip_tags(str_ireplace(['<br>','<br/>','<br />'],"\n",(string)$product['tomtat'])))).'</p><p><strong>Tình trạng:</strong> '.((int)$product['soluong']>0?'Còn '.(int)$product['soluong'].' sản phẩm':'Tạm hết hàng').'</p>';
+        echo '<h1>'.h($product['tensanpham']).'</h1><p class="rating">★ 4.9 <span>· Bảo hành theo quy định cửa hàng</span></p><p class="detail-price">'.money($displayPrice).'</p>';
+        if ($isPhone) {
+            echo '<div class="variant-picker"><strong>Chọn dung lượng</strong><div class="variant-options">';
+            foreach (['128GB','256GB','512GB','1TB'] as $option) {
+                echo '<a class="variant-option'.($variant===$option?' active':'').'" href="'.link_to('product',['id'=>$id,'variant'=>$option]).'">'.h($option).'</a>';
+            }
+            echo '</div></div>';
+        }
+        echo '<p>'.nl2br(h(strip_tags(str_ireplace(['<br>','<br/>','<br />'],"\\n",(string)$product['tomtat'])))).'</p><p><strong>Tình trạng:</strong> '.((int)$product['soluong']>0?'Còn '.(int)$product['soluong'].' sản phẩm':'Tạm hết hàng').'</p>';
         if ((int)$product['soluong']>0) {
-            echo '<form action="index.php" method="post" class="purchase-form">'.csrf_field().'<input type="hidden" name="action" value="add_cart"><input type="hidden" name="product_id" value="'.$id.'">';
+            echo '<form action="'.h(project_url('index.php')).'" method="post" class="purchase-form">'.csrf_field().'<input type="hidden" name="action" value="add_cart"><input type="hidden" name="product_id" value="'.$id.'"><input type="hidden" name="variant" value="'.h($variant).'">';
             echo '<label>Số lượng <input class="field qty" name="qty" type="number" min="1" max="'.min((int)$product['soluong'],20).'" value="1" required></label><button class="button">＋ Thêm vào giỏ hàng</button></form>';
         }
         echo '<div class="product-services">✓ Thanh toán bảo mật &nbsp; ✓ Có theo dõi đơn &nbsp; ✓ Tư vấn hỗ trợ</div></div></div>';
@@ -93,8 +104,10 @@ elseif ($page==='cart' || $page==='checkout') {
         echo '<h2>Sản phẩm đã chọn</h2>';
         foreach ($items as $item) {
             $id=(int)$item['id_sanpham'];
-            echo '<div class="cart-item"><img src="'.h(safe_image($item['hinhanh'])).'" alt=""><div><strong>'.h($item['tensanpham']).'</strong><p>'.money((int)$item['giasp']).'</p></div>';
-            echo '<form method="post">'.csrf_field().'<input type="hidden" name="action" value="cart_update"><input type="hidden" name="product_id" value="'.$id.'"><input class="field qty" name="qty" type="number" min="0" max="20" value="'.(int)$item['cart_qty'].'"><button class="button button--light">Cập nhật</button></form></div>';
+            echo '<div class="cart-item"><img src="'.h(safe_image($item['hinhanh'])).'" alt=""><div><strong>'.h($item['tensanpham']).'</strong>';
+            if ($item['variant_label']!=='') echo '<small class="cart-variant">'.h($item['variant_label']).'</small>';
+            echo '<p>'.money((int)$item['cart_unit_price']).'</p></div>';
+            echo '<form method="post">'.csrf_field().'<input type="hidden" name="action" value="cart_update"><input type="hidden" name="product_id" value="'.$id.'"><input type="hidden" name="cart_key" value="'.h($item['cart_key']).'"><input class="field qty" name="qty" type="number" min="0" max="20" value="'.(int)$item['cart_qty'].'"><button class="button button--light">Cập nhật</button></form></div>';
         }
     } else {
         echo '<h2>Thông tin giao hàng</h2><form action="index.php" method="post" id="checkout-form">'.csrf_field().'<input type="hidden" name="action" value="checkout">';
@@ -107,7 +120,7 @@ elseif ($page==='cart' || $page==='checkout') {
         echo '<p class="hint">VietQR hiển thị thông tin chuyển khoản, không tự xác nhận tiền đã nhận.</p></form>';
     }
     echo '</section><aside class="surface order-summary"><h2>Tóm tắt đơn hàng</h2>';
-    foreach ($items as $item) echo '<div class="summary-line"><span>'.h($item['tensanpham']).' × '.(int)$item['cart_qty'].'</span><strong>'.money((int)$item['cart_total']).'</strong></div>';
+    foreach ($items as $item) echo '<div class="summary-line"><span>'.h($item['tensanpham']).($item['variant_label']!==''?' · '.h($item['variant_label']):'').' × '.(int)$item['cart_qty'].'</span><strong>'.money((int)$item['cart_total']).'</strong></div>';
     echo '<hr><div class="summary-total"><span>Tổng tiền</span><strong>'.money((int)$total).'</strong></div>';
     if ($items) {
         if ($page==='checkout') echo '<button form="checkout-form" class="button full">Xác nhận đặt hàng →</button>';
@@ -161,8 +174,8 @@ elseif ($page==='orders' || $page==='order') {
         if (!$order) { http_response_code(404);echo '<div class="surface">Không tìm thấy đơn hàng của bạn.</div>'; }
         else {
             echo '<div class="checkout-layout"><section class="surface"><span class="badge">'.h($order['order_status']).'</span><h2>Đơn hàng '.h($order['order_code']).'</h2><p>Đặt lúc '.h($order['created_at']).'</p><div class="timeline"><span>Đã đặt</span><span>Đã xác nhận</span><span>Đang giao</span><span>Hoàn thành</span></div><h3>Sản phẩm</h3>';
-            foreach (rows('SELECT product_name,quantity,unit_price FROM v2_order_items WHERE order_id=?',[$order['id']]) as $item) {
-                echo '<div class="summary-line"><span>'.h($item['product_name']).' × '.(int)$item['quantity'].'</span><strong>'.money((int)$item['unit_price']*(int)$item['quantity']).'</strong></div>';
+            foreach (rows('SELECT product_name,variant_label,quantity,unit_price FROM v2_order_items WHERE order_id=?',[$order['id']]) as $item) {
+                echo '<div class="summary-line"><span>'.h($item['product_name']).($item['variant_label']!=='BASE'?' · '.h($item['variant_label']):'').' × '.(int)$item['quantity'].'</span><strong>'.money((int)$item['unit_price']*(int)$item['quantity']).'</strong></div>';
             }
             echo '<hr><h3>Thông tin nhận hàng</h3><p>'.h($order['customer_name']).' · '.h($order['phone']).'</p><p>'.h($order['delivery_address']).'</p></section>';
             echo '<aside class="surface order-summary"><h2>Thanh toán</h2><p>Phương thức: <strong>'.h($order['payment_method']).'</strong></p><p>Trạng thái: <strong>'.h($order['payment_status']).'</strong></p><p class="detail-price">'.money((int)$order['total_amount']).'</p>';
@@ -203,7 +216,7 @@ elseif ($page==='contact') {
 }
 echo '</main>';
 } catch (Throwable $e) {
-    error_log('[BanHang v2 rendering] '.$e->getMessage());
+    error_log('[BanHang rendering] '.$e->getMessage());
     http_response_code(500);
-    echo '<section class="container section"><div class="surface"><h1>Không thể hiển thị trang.</h1><p>Kiểm tra kết nối MySQL và đã import v2/database_upgrade.sql.</p></div></section>';
+    echo '<section class="container section"><div class="surface"><h1>Không thể hiển thị trang.</h1><p>Kiểm tra kết nối MySQL và đã import database_upgrade.sql.</p></div></section>';
 }

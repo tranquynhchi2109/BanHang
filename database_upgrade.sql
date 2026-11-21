@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS v2_order_items (
  order_id BIGINT UNSIGNED NOT NULL,
  product_id INT NOT NULL,
  product_name VARCHAR(250) NOT NULL,
+ variant_label VARCHAR(20) NOT NULL DEFAULT 'BASE',
  unit_price BIGINT UNSIGNED NOT NULL,
  quantity SMALLINT UNSIGNED NOT NULL,
  CONSTRAINT fk_v2_items_order FOREIGN KEY (order_id) REFERENCES v2_orders(id) ON DELETE CASCADE,
@@ -41,3 +42,15 @@ CREATE TABLE IF NOT EXISTS v2_login_attempts (
  INDEX idx_hash_time (key_hash, attempted_at),
  INDEX idx_attempt_time (attempted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Add the variant snapshot safely when the original migration has already been run.
+SET @variant_column_exists = (
+ SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='v2_order_items' AND COLUMN_NAME='variant_label'
+);
+SET @variant_sql = IF(@variant_column_exists=0,
+ "ALTER TABLE v2_order_items ADD COLUMN variant_label VARCHAR(20) NOT NULL DEFAULT 'BASE'",
+ "SELECT 1");
+PREPARE variant_stmt FROM @variant_sql;
+EXECUTE variant_stmt;
+DEALLOCATE PREPARE variant_stmt;
