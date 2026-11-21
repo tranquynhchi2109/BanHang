@@ -27,7 +27,7 @@ header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: DENY');
 header('Referrer-Policy: strict-origin-when-cross-origin');
 header("Permissions-Policy: camera=(), microphone=(), geolocation=()");
-header("Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; img-src 'self' https://img.vietqr.io data:; font-src 'self' https://fonts.gstatic.com; form-action 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'");
+header("Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; img-src 'self' https://img.vietqr.io https://images.samsung.com https://cdsassets.apple.com https://in.store.asus.com https://www.sony.com.pe https://cdn.tgdd.vn data:; font-src 'self' https://fonts.gstatic.com; form-action 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'");
 header('Cache-Control: no-store');
 
 function base_path(): string
@@ -326,16 +326,61 @@ function login_admin(string $username, string $password): bool
     $_SESSION['csrf'] = bin2hex(random_bytes(32));
     return true;
 }
+/**
+ * Prefer store-owned assets. The legacy SQL dump includes filenames that never
+ * existed in the admin upload folder: resolve them without changing DB records.
+ *
+ * For five demo products without matching local media, use exact product photos
+ * from manufacturer/product pages. Those remote sources need an internet
+ * connection; owners should replace them with licensed local uploads in Admin.
+ */
 function safe_image(string $filename, string $kind = 'product'): string
 {
-    $basename = basename(str_replace('\\', '/', $filename));
-    if ($basename === '' || !preg_match('/\\.(?:png|jpe?g|webp)$/i', $basename)) {
+    $basename = basename(str_replace('\\', '/', trim($filename)));
+    if ($basename === '' || !preg_match('/\.(?:png|jpe?g|webp)$/i', $basename)) {
         return project_url('images/fallback.svg');
     }
-    $folder = $kind === 'news' ? 'quanlybaiviet' : 'quanlysp';
-    $local = __DIR__ . '/admin/modules/' . $folder . '/uploads/' . $basename;
-    if (!is_file($local)) return project_url('images/fallback.svg');
-    return project_url('admin/modules/' . $folder . '/uploads/' . rawurlencode($basename));
+    $uploadFolder = $kind === 'news' ? 'quanlybaiviet' : 'quanlysp';
+    $uploadBase = 'admin/modules/' . $uploadFolder . '/uploads/';
+    if (is_file(__DIR__ . '/' . $uploadBase . $basename)) {
+        return project_url($uploadBase . rawurlencode($basename));
+    }
+    if (is_file(__DIR__ . '/images/' . $basename)) {
+        return project_url('images/' . rawurlencode($basename));
+    }
+
+    // Aliases for real images already committed to this repository.
+    // Always prefer a product owner's uploaded image over an alias.
+    $aliases = [
+        'iphone15.jpg' => 'ip 15prm.webp',
+        'tintuc1.jpg' => 'ip15pro.jpg',
+        'tintuc2.jpg' => 'Asus TUF Gaming A15.jpg',
+    ];
+    $alias = $aliases[strtolower($basename)] ?? null;
+    if ($alias !== null && is_file(__DIR__ . '/images/' . $alias)) {
+        return project_url('images/' . rawurlencode($alias));
+    }
+
+    // Curated exact-model photos; these are remotely hosted product media.
+    // No arbitrary external URL from user-controlled database fields is used.
+    $productMedia = [
+        's24ultra.jpg' => 'https://images.samsung.com/is/image/samsung/assets/co/smartphones/galaxy-s24-ultra/buy/S24Ultra-Color-Titanium_Grey_MO_0527_final.jpg',
+        'macbookm3.jpg' => 'https://cdsassets.apple.com/live/7WUAS350/images/tech-specs/mba_13_m3_2024_hero.png',
+        'asusrog.jpg' => 'https://in.store.asus.com/media/catalog/product/g/6/g614jv_eclps_gry_4zn_rgb_kbd_mso_rfrsh_1_.jpg',
+        'sonyxm5.jpg' => 'https://www.sony.com.pe/image/6145c1d32e6ac8e63a46c912dc33c5bb?fmt=png-alpha&hei=880&wid=880',
+        'anker20k.jpg' => 'https://cdn.tgdd.vn/Products/Images/57/328167/pin-sac-du-phong-20000mah-type-c-pd-qc-3-0-30w-anker-a1384-kem-cap-type-c-thumb-600x600.jpg',
+    ];
+    return $productMedia[strtolower($basename)] ?? project_url('images/fallback.svg');
+}
+
+function backup_image(string $category = ''): string
+{
+    $label = mb_strtolower(trim($category));
+    if (str_contains($label, 'điện thoại')) return project_url('images/' . rawurlencode('ip 15prm.webp'));
+    if (str_contains($label, 'laptop')) return project_url('images/' . rawurlencode('Asus TUF Gaming A15.jpg'));
+    if (str_contains($label, 'tai nghe') || str_contains($label, 'âm thanh')) return project_url('images/' . rawurlencode('airpods-pro-3.webp'));
+    if (str_contains($label, 'phụ kiện') || str_contains($label, 'sạc')) return project_url('images/' . rawurlencode('sạc dự phòng anker 335.png'));
+    return project_url('images/fallback.svg');
 }
 function setting(string $key, string $default = ''): string
 {
@@ -402,7 +447,7 @@ function product_card(array $product): void
     $variant = is_phone_product($product) ? '128GB' : 'BASE';
     $price = null;
     try { $price = variant_price($product, $variant); } catch (DomainException $e) {}
-    echo '<article class="product-card"><a class="product-card__image" href="' . link_to('product', ['id' => $id]) . '"><img loading="lazy" src="' . h(safe_image($product['hinhanh'])) . '" alt="' . h($product['tensanpham']) . '"></a>';
+    echo '<article class="product-card"><a class="product-card__image" href="' . link_to('product', ['id' => $id]) . '"><img loading="lazy" decoding="async" src="' . h(safe_image($product['hinhanh'])) . '" data-image-fallback="' . h(backup_image((string)($product['tendanhmuc']??''))) . '" alt="' . h($product['tensanpham']) . '"></a>';
     echo '<p class="product-card__cat">' . h($product['tendanhmuc'] ?? 'Công nghệ') . '</p><h3><a href="' . link_to('product', ['id' => $id]) . '">' . h($product['tensanpham']) . '</a></h3>';
     echo '<p class="rating">★ 4.9 <span>· Sản phẩm chính hãng</span></p><div class="product-card__bottom">';
     echo '<strong>' . ($price === null ? 'Chưa có giá' : money($price)) . '</strong>';

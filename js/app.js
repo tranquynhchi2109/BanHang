@@ -16,6 +16,18 @@
     });
   }
 
+  // Keep image tiles usable when a manufacturer CDN is unavailable.
+  // This listener is loaded from our own JS file (no inline event handlers).
+  document.addEventListener('error', event => {
+    const img = event.target;
+    if (!(img instanceof HTMLImageElement)) return;
+    const backup = img.dataset.imageFallback;
+    if (!backup || img.dataset.backupUsed === '1') return;
+    img.dataset.backupUsed = '1';
+    img.src = backup;
+    img.alt = 'Ảnh minh họa cho danh mục sản phẩm';
+  }, true);
+
   // Destructive server actions require a second deliberate interaction.
   document.querySelectorAll('[data-confirm]').forEach(button => {
     button.addEventListener('click', event => {

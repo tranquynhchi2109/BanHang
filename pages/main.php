@@ -16,8 +16,8 @@ if ($page==='home') {
     section_header('Khám phá theo danh mục','Tìm chính xác thiết bị phù hợp với bạn.');
     echo '<div class="categories">';
     foreach ($categories as $i=>$cat) {
-        $symbol=['▯','▱','♫','◷','◇','⚡','◎','♧'][$i%8];
-        echo '<a href="'.link_to('products',['category_id'=>(int)$cat['id_danhmuc']]).'"><span>'.h($symbol).'</span><strong>'.h($cat['tendanhmuc']).'</strong><small>Khám phá ↗</small></a>';
+        $picture=backup_image((string)$cat['tendanhmuc']);
+        echo '<a href="'.link_to('products',['category_id'=>(int)$cat['id_danhmuc']]).'"><span class="category-photo"><img loading="lazy" decoding="async" src="'.h($picture).'" alt="'.h($cat['tendanhmuc']).'"></span><strong>'.h($cat['tendanhmuc']).'</strong><small>Khám phá ↗</small></a>';
     }
     echo '</div></section><section class="section">';
     section_header('Được yêu thích nhất','Những sản phẩm công nghệ nổi bật đang có tại cửa hàng.',link_to('products'));
@@ -74,7 +74,7 @@ elseif ($page==='product') {
         if ($isPhone && !in_array($variant,['128GB','256GB','512GB','1TB'],true)) $variant='128GB';
         $displayPrice=$isPhone?($prices[$variant]??null):(int)$product['giasp'];
         echo '<div class="container section"><p class="breadcrumb"><a href="'.h(project_url('index.php')).'">Trang chủ</a> / '.h($product['tendanhmuc']).' / '.h($product['tensanpham']).'</p>';
-        echo '<div class="product-detail"><div class="product-detail__photo"><img src="'.h(safe_image($product['hinhanh'])).'" alt="'.h($product['tensanpham']).'"></div><div class="product-detail__info"><span class="badge">CHÍNH HÃNG</span>';
+        echo '<div class="product-detail"><div class="product-detail__photo"><img decoding="async" src="'.h(safe_image($product['hinhanh'])).'" data-image-fallback="'.h(backup_image((string)$product['tendanhmuc'])).'" alt="'.h($product['tensanpham']).'"></div><div class="product-detail__info"><span class="badge">CHÍNH HÃNG</span>';
         echo '<h1>'.h($product['tensanpham']).'</h1><p class="rating">★ 4.9 <span>· Giá được đối chiếu với cơ sở dữ liệu</span></p>';
         echo '<p class="detail-price">'.($displayPrice===null?'Dung lượng chưa có giá bán':money($displayPrice)).'</p>';
         if ($isPhone) {
@@ -119,7 +119,7 @@ elseif ($page==='cart' || $page==='checkout') {
         echo '<h2>Sản phẩm đã chọn</h2>';
         foreach ($items as $item) {
             $id=(int)$item['id_sanpham'];
-            echo '<div class="cart-item"><img src="'.h(safe_image($item['hinhanh'])).'" alt=""><div><strong>'.h($item['tensanpham']).'</strong>';
+            echo '<div class="cart-item"><img loading="lazy" decoding="async" src="'.h(safe_image($item['hinhanh'])).'" data-image-fallback="'.h(backup_image((string)$item['tendanhmuc'])).'" alt="'.h($item['tensanpham']).'"><div><strong>'.h($item['tensanpham']).'</strong>';
             if ($item['variant_label']!=='') echo '<small class="cart-variant">'.h($item['variant_label']).'</small>';
             echo '<p>'.($item['cart_price_error']?'Dung lượng chưa có giá · vui lòng xóa khỏi giỏ':money((int)$item['cart_unit_price'])).'</p></div>';
             echo '<form method="post">'.csrf_field().'<input type="hidden" name="action" value="cart_update"><input type="hidden" name="product_id" value="'.$id.'"><input type="hidden" name="cart_key" value="'.h($item['cart_key']).'"><input class="field qty" name="qty" type="number" min="0" max="20" value="'.(int)$item['cart_qty'].'"><button class="button button--light">Cập nhật</button></form></div>';

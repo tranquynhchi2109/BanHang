@@ -53,3 +53,10 @@ và không có mức phụ thu ẩn trong PHP.
 - Thiếu phần bản dung lượng 1TB trong `tbl_product_variants`. Import lại duy nhất `banhang.sql` bổ sung hàng 1TB và các bản còn thiếu theo đúng giá giao diện cũ đã từng hiện, không sửa/xóa dữ liệu khách hàng hay đè giá Admin.
 - Ví dụ Samsung S24 Ultra: gốc 27.500.000đ, 1TB 37.500.000đ. Sau khi import, sản phẩm, giỏ hàng và checkout đều đọc một giá từ SQL.
 - Backend không thể tự đẩy dữ liệu vào MySQL `localhost` của máy người dùng qua GitHub; phải import SQL trên XAMPP một lần.
+
+## Ảnh sản phẩm và banner
+- PHP `safe_image()` ưu tiên ảnh do cửa hàng upload tại `admin/modules/.../uploads/`, sau đó tìm `images/` của dự án.
+- Khi dump cũ nhắc tới `iphone15.jpg`, `tintuc1.jpg`, `tintuc2.jpg` nhưng file không tồn tại, có mapping đến ảnh sẵn trong repository.
+- Với 5 mẫu demo thiếu ảnh tại máy, frontend trỏ đến hình đúng sản phẩm từ Samsung, Apple, ASUS, Sony và ảnh Anker A1384 được tra cứu trên nhà bán lẻ. Những ảnh này tải từ mạng, không được lưu vào database hoặc tự động tải xuống GitHub.
+- Trong sản phẩm thật, hãy upload ảnh đã được phép sử dụng tại trang Admin để ảnh hoạt động offline, tải ổn định và không phụ thuộc website thứ ba.
+- Cải thiện banner, danh mục, ảnh chi tiết, giỏ hàng và ảnh tin tức. Ảnh hỏng có ảnh minh họa danh mục thay thế.
