@@ -155,6 +155,11 @@ try {
                 if ($changed!==1) throw new DomainException('Không tìm thấy đơn hàng cũ.');
                 notice('Đã đánh dấu đơn hàng là đã xem.','success');
                 redirect_to(admin_to('legacy_order',['id'=>$legacyId]));
+            case 'decline_cancel_request':
+                $id=as_int($_POST['id']??0);
+                admin_decline_cancel_request($id,$adminId,(string)($_POST['decline_reason']??''));
+                notice('Đã từ chối yêu cầu hủy và thông báo cho khách.','success');
+                redirect_to(admin_to('order',['id'=>$id]));
             case 'order_status':
                 $id=as_int($_POST['id']??0);
                 $next=(string)($_POST['status']??'');
@@ -278,7 +283,7 @@ try {
     $act=(string)($_POST['action']??'');
     $postedId=filter_var($_POST['id']??0,FILTER_VALIDATE_INT);
     $postedCustomerId=filter_var($_POST['customer_id']??0,FILTER_VALIDATE_INT);
-    if (in_array($act,['order_status','save_order_notes','mark_paid','reject_bank_report','expire_unpaid','confirm_cod_paid'],true) && $postedId && $postedId>0) {
+    if (in_array($act,['order_status','decline_cancel_request','save_order_notes','mark_paid','reject_bank_report','expire_unpaid','confirm_cod_paid'],true) && $postedId && $postedId>0) {
         redirect_to(admin_to('order',['id'=>(int)$postedId]));
     }
     if ($act==='send_customer_notification' && $postedCustomerId && $postedCustomerId>0) {
@@ -297,7 +302,7 @@ try {
     }
     $target=match($act) {
         'login_admin'=>'login','save_product'=>'product_form','save_category'=>'categories',
-        'order_status','save_order_notes','mark_paid','reject_bank_report','expire_unpaid','confirm_cod_paid'=>'orders',
+        'order_status','decline_cancel_request','save_order_notes','mark_paid','reject_bank_report','expire_unpaid','confirm_cod_paid'=>'orders',
         'legacy_order_seen'=>'legacy_orders','send_customer_notification'=>'customers',
         'save_settings','retry_email_outbox','retry_skipped_email_outbox'=>'settings','save_article'=>'article_form',
         default=>'dashboard'
@@ -659,6 +664,8 @@ elseif ($page==='payments') {
 }
 elseif ($page==='orders') {
     admin_title('Quản lý đơn hàng','Tìm kiếm, lọc và cập nhật tiến độ xử lý đơn hàng.');
+    $pendingCancelCount=(int)(row("SELECT COUNT(*) AS n FROM tbl_order_cancel_requests WHERE status='PENDING'")['n']??0);
+    if ($pendingCancelCount>0) echo '<div class="alert info">📩 Có <strong>'.$pendingCancelCount.'</strong> yêu cầu hủy đang chờ duyệt. Kiểm tra đơn hàng trước khi tiếp tục xác nhận/giao hàng.</div>';
     $status=(string)($_GET['status']??'');
     $method=(string)($_GET['method']??'');
     $q=trim((string)($_GET['q']??''));
@@ -682,7 +689,9 @@ elseif ($page==='orders') {
     if (preg_match('/^\d{4}-\d{2}-\d{2}$/',$to)) { $where[]='created_at <= ?'; $params[]=$to.' 23:59:59'; } else $to='';
     $whereSql=$where?' WHERE '.implode(' AND ',$where):'';
     $totalRows=(int)(row('SELECT COUNT(*) AS n FROM tbl_orders'.$whereSql,$params)['n']??0);
-    $orders=rows('SELECT id,order_code,customer_name,phone,created_at,total_amount,payment_method,payment_status,payment_review_status,order_status,tracking_code FROM tbl_orders'.$whereSql.' ORDER BY id DESC LIMIT '.$perPage.' OFFSET '.$offset,$params);
+    $orders=rows("SELECT id,order_code,customer_name,phone,created_at,total_amount,payment_method,payment_status,payment_review_status,order_status,tracking_code,
+                         (SELECT COUNT(*) FROM tbl_order_cancel_requests cr WHERE cr.order_id=tbl_orders.id AND cr.status='PENDING') AS cancel_pending
+                   FROM tbl_orders".$whereSql.' ORDER BY id DESC LIMIT '.$perPage.' OFFSET '.$offset,$params);
 
     echo '<div class="filter-tabs">';
     foreach ([''=>'Tất cả','PENDING'=>'Đã đặt hàng','CONFIRMED'=>'Đã xác nhận','PREPARING'=>'Đang chuẩn bị','SHIPPING'=>'Đang giao','COMPLETED'=>'Đã giao','CANCELLED'=>'Đã hủy'] as $k=>$label) {
@@ -734,6 +743,7 @@ elseif ($page==='order') {
     if (!$order) throw new DomainException('Đơn hàng không tồn tại.');
     $payState=payment_state_summary($order);
     $curStatus=(string)$order['order_status'];
+    $cancelRequest=row('SELECT * FROM tbl_order_cancel_requests WHERE order_id=?',[$id]);
     admin_title('Đơn hàng '. $order['order_code'],'Quản lý đối soát thanh toán, tiến độ xử lý, vận đơn và lịch sử thay đổi.','<a class="button button--light" href="'.admin_to('orders').'">← Danh sách đơn</a>');
 
     echo '<div class="admin-grid"><div class="surface"><h2>Thông tin đơn hàng</h2>';
@@ -781,6 +791,27 @@ elseif ($page==='order') {
     echo '<div class="surface"><h2>Trạng thái & Thanh toán</h2>';
     echo '<p>Trạng thái đơn: <span class="status-pill status-pill--'.h(order_status_tone($curStatus)).'">'.h(order_status_label($curStatus)).'</span></p>';
     echo '<p>Thanh toán: <strong>'.h(payment_method_label((string)$order['payment_method'])).'</strong> · <span class="status-pill status-pill--'.h($payState['tone']).'">'.h($payState['label']).'</span></p>';
+    if ($cancelRequest) {
+        echo '<section class="payment-admin-form"><h3>📩 Yêu cầu hủy từ khách hàng</h3>';
+        echo '<p>Trạng thái: <strong>'.h($cancelRequest['status']).'</strong> · Gửi lúc '.h($cancelRequest['created_at']).'</p>';
+        echo '<p><strong>Lý do:</strong> '.h($cancelRequest['reason']).'</p>';
+        if ($cancelRequest['status']==='PENDING') {
+            if (in_array($curStatus,['PENDING','CONFIRMED','PREPARING'],true)
+                && $order['payment_status']!=='PAID' && $order['payment_review_status']!=='REPORTED') {
+                echo '<form method="post">'.csrf_field().'<input type="hidden" name="action" value="order_status"><input type="hidden" name="id" value="'.$id.'"><input type="hidden" name="status" value="CANCELLED">';
+                echo '<input type="hidden" name="cancel_reason" value="'.h($cancelRequest['reason']).'">';
+                echo '<button type="submit" class="button button--danger full" data-confirm="Chấp thuận hủy đơn và hoàn tồn kho đúng một lần?">Chấp thuận hủy &amp; hoàn kho</button></form>';
+            } else {
+                echo '<p class="payment-alert">Đơn đã nhận tiền, đang đối soát hoặc đã giao. Không tự hủy/hoàn tiền trước khi kiểm tra thực tế.</p>';
+            }
+            echo '<form method="post">'.csrf_field().'<input type="hidden" name="action" value="decline_cancel_request"><input type="hidden" name="id" value="'.$id.'">';
+            echo '<label class="field-group">Lý do chưa duyệt hủy<input class="field" name="decline_reason" minlength="5" maxlength="300" required placeholder="Giải thích cho khách hàng"></label>';
+            echo '<button type="submit" class="button button--light" data-confirm="Từ chối yêu cầu hủy và thông báo cho khách?">Từ chối yêu cầu hủy</button></form>';
+        } elseif ($cancelRequest['admin_note']!=='') {
+            echo '<p class="hint">Phản hồi Admin: '.h($cancelRequest['admin_note']).'</p>';
+        }
+        echo '</section>';
+    }
 
     $transitions=order_status_transitions();
     $forwardNext=[];
