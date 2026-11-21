@@ -271,57 +271,44 @@ elseif ($page==='orders' || $page==='order') {
         else {
             $payState=payment_state_summary($order);
             $history=rows('SELECT from_status,to_status,actor_type,note,created_at FROM tbl_order_status_history WHERE order_id=? AND is_public=1 ORDER BY id ASC',[(int)$order['id']]);
-            $reached=[];
-            foreach ($history as $hItem) {
-                $st=(string)$hItem['to_status'];
-                if (!isset($reached[$st])) $reached[$st]=(string)$hItem['created_at'];
-            }
+            $timeline=build_order_timeline($order,$history);
             $curStatus=(string)$order['order_status'];
-            $steps=[
-                'PENDING'=>'Đã đặt hàng',
-                'CONFIRMED'=>'Đã xác nhận',
-                'PREPARING'=>'Đang chuẩn bị hàng',
-                'SHIPPING'=>'Đang giao hàng',
-                'COMPLETED'=>'Đã giao thành công',
-            ];
-            $stepOrder=array_keys($steps);
-            $curIdx=array_search($curStatus,$stepOrder,true);
-            $sig=$curStatus.'|'.$order['payment_status'].'|'.$order['payment_review_status'].'|'.$order['updated_at'];
+            $sig=implode('|',[
+                $curStatus,
+                (string)$order['payment_status'],
+                (string)$order['payment_review_status'],
+                (string)($order['shipping_carrier']??''),
+                (string)($order['tracking_code']??''),
+                (string)($order['customer_note']??''),
+                (string)$order['updated_at'],
+                (string)count($history),
+            ]);
+            $isFinal=($curStatus==='CANCELLED') || ($curStatus==='COMPLETED' && $order['payment_status']==='PAID');
 
             echo '<div class="order-watch-banner" id="order-live-banner" hidden></div>';
-            echo '<div class="checkout-layout" data-order-watch="'.h($order['order_code']).'" data-order-signature="'.h($sig).'" data-order-final="'.(in_array($curStatus,['COMPLETED','CANCELLED'],true)?'1':'0').'">';
+            echo '<div class="checkout-layout" data-order-watch="'.h($order['order_code']).'" data-order-signature="'.h($sig).'" data-order-final="'.($isFinal?'1':'0').'">';
             echo '<section class="surface">';
-            echo '<div class="order-header-row"><div><span class="status-pill status-pill--'.h(order_status_tone($curStatus)).'">'.h(order_status_label($curStatus)).'</span>';
-            echo '<h2>Đơn hàng '.h($order['order_code']).'</h2><p class="hint">Đặt lúc '.h($order['created_at']).' · Cập nhật gần nhất: '.h($order['updated_at']).'</p></div>';
+            echo '<div class="order-header-row"><div><span class="status-pill status-pill--'.h(order_status_tone($curStatus)).'" data-order-status-pill>'.h(order_status_label($curStatus)).'</span>';
+            echo '<h2>Đơn hàng '.h($order['order_code']).'</h2><p class="hint">Đặt lúc '.h($order['created_at']).' · Cập nhật gần nhất: <span data-order-updated-at>'.h($order['updated_at']).'</span></p></div>';
             echo '<a class="button button--light" href="'.link_to('orders').'">← Tất cả đơn hàng</a></div>';
 
+            echo '<div data-order-banner-slot>';
             if ($curStatus==='COMPLETED') {
                 echo '<div class="order-banner order-banner--success"><strong>Giao hàng thành công!</strong><p>Đơn hàng '.h($order['order_code']).' đã được giao thành công'.(!empty($order['delivered_at'])?' lúc '.h($order['delivered_at']):'').'. Cảm ơn bạn đã tin tưởng BanHang!</p></div>';
             } elseif ($curStatus==='CANCELLED') {
                 echo '<div class="order-banner order-banner--danger"><strong>Đơn hàng đã bị hủy</strong><p>Lý do: '.h($order['cancel_reason']!==''?$order['cancel_reason']:'Đơn hàng đã bị hủy theo quy trình xử lý.').'</p><p>Tình trạng thanh toán: '.h($payState['label']).'.</p></div>';
             }
+            echo '</div>';
 
-            // Accurate visual timeline showing ONLY reached/current/upcoming steps
-            echo '<div class="order-timeline">';
-            foreach ($steps as $stKey=>$stLabel) {
-                $idx=array_search($stKey,$stepOrder,true);
-                $stateClass='upcoming';
-                $stepTime=$reached[$stKey]??'';
-                if ($curStatus==='CANCELLED') {
-                    if ($stKey==='PENDING' || isset($reached[$stKey])) $stateClass='done';
-                } elseif ($curIdx!==false) {
-                    if ($idx<$curIdx || ($curStatus==='COMPLETED' && $idx===$curIdx)) $stateClass='done';
-                    elseif ($idx===$curIdx) $stateClass='current';
-                }
-                if ($stKey==='PENDING' && $stepTime==='') $stepTime=(string)$order['created_at'];
-                echo '<div class="timeline-step is-'.$stateClass.'"><span class="timeline-dot"></span><strong>'.h($stLabel).'</strong><small>'.($stepTime!==''?h($stepTime):($stateClass==='upcoming'?'Chờ xử lý':'')).'</small></div>';
-            }
-            if ($curStatus==='CANCELLED') {
-                echo '<div class="timeline-step is-cancelled"><span class="timeline-dot"></span><strong>Đã hủy</strong><small>'.h($reached['CANCELLED']??$order['updated_at']).'</small></div>';
+            // Accurate visual timeline showing ONLY reached/current/upcoming steps (shared with api.php)
+            echo '<div class="order-timeline" data-order-timeline>';
+            foreach ($timeline as $step) {
+                echo '<div class="timeline-step is-'.h($step['state']).'"><span class="timeline-dot"></span><strong>'.h($step['label']).'</strong><small>'.h($step['time']).'</small></div>';
             }
             echo '</div>';
 
             // Shipping / tracking block (real data only)
+            echo '<div data-order-shipping-slot>';
             if (trim((string)($order['shipping_carrier']??''))!=='' || trim((string)($order['tracking_code']??''))!=='' || !empty($order['shipped_at'])) {
                 echo '<div class="shipping-box"><h3>Thông tin vận chuyển</h3>';
                 if (trim((string)$order['shipping_carrier'])!=='') echo '<p>Đơn vị vận chuyển: <strong>'.h($order['shipping_carrier']).'</strong></p>';
@@ -330,9 +317,12 @@ elseif ($page==='orders' || $page==='order') {
                 if (!empty($order['delivered_at'])) echo '<p>Thời gian giao thành công: '.h($order['delivered_at']).'</p>';
                 echo '</div>';
             }
+            echo '</div>';
+            echo '<div data-order-customer-note-slot>';
             if (trim((string)($order['customer_note']??''))!=='') {
                 echo '<div class="payment-status-note"><strong>Ghi chú từ cửa hàng</strong><p>'.nl2br(h($order['customer_note'])).'</p></div>';
             }
+            echo '</div>';
 
             echo '<h3>Sản phẩm trong đơn</h3>';
             foreach (rows('SELECT product_name,variant_label,quantity,unit_price FROM tbl_order_items WHERE order_id=?',[$order['id']]) as $item) {
@@ -342,27 +332,28 @@ elseif ($page==='orders' || $page==='order') {
             if (trim((string)$order['note'])!=='') echo '<p class="hint">Ghi chú của bạn: '.h($order['note']).'</p>';
 
             echo '<hr><h3>Lịch sử cập nhật đơn hàng</h3>';
+            echo '<div class="history-list" data-order-history-list>';
             if (!$history) {
                 echo '<p class="hint">Đơn hàng đã được ghi nhận lúc '.h($order['created_at']).'.</p>';
             } else {
-                echo '<div class="history-list">';
                 foreach (array_reverse($history) as $ev) {
                     echo '<div class="history-item"><div><strong>'.h(order_status_label((string)$ev['to_status'])).'</strong><span>'.h($ev['created_at']).'</span></div>';
                     if (trim((string)$ev['note'])!=='') echo '<p>'.h($ev['note']).'</p>';
                     echo '</div>';
                 }
-                echo '</div>';
             }
+            echo '</div>';
             echo '</section>';
 
             // Right summary: payment & reconciliation card
             echo '<aside class="surface order-summary"><h2>Thông tin thanh toán</h2>';
             echo '<p>Phương thức: <strong>'.h(payment_method_label((string)$order['payment_method'])).'</strong></p>';
-            echo '<p>Trạng thái thanh toán: <span class="status-pill status-pill--'.h($payState['tone']).'">'.h($payState['label']).'</span></p>';
+            echo '<p>Trạng thái thanh toán: <span class="status-pill status-pill--'.h($payState['tone']).'" data-order-payment-pill>'.h($payState['label']).'</span></p>';
             if ($order['payment_method']==='BANK') {
-                echo '<p>Trạng thái đối soát: <strong>'.h(payment_review_label((string)$order['payment_review_status'])).'</strong></p>';
+                echo '<p>Trạng thái đối soát: <strong data-order-payment-review>'.h(payment_review_label((string)$order['payment_review_status'])).'</strong></p>';
             }
             echo '<p class="detail-price">'.money((int)$order['total_amount']).'</p>';
+            echo '<div data-order-payment-body>';
 
             if ($order['payment_method']==='BANK' && $order['payment_status']==='PAID') {
                 echo '<div class="order-banner order-banner--success"><strong>Thanh toán thành công!</strong>';
@@ -404,7 +395,7 @@ elseif ($page==='orders' || $page==='order') {
                 echo '<p class="hint">Bạn sẽ thanh toán bằng tiền mặt hoặc theo hướng dẫn khi nhân viên giao hàng giao sản phẩm.</p>';
             }
 
-            echo '<hr><p class="hint">Cần hỗ trợ về đơn hàng này? <a class="link-blue" href="'.link_to('contact').'">Liên hệ bộ phận CSKH →</a></p>';
+            echo '</div><hr><p class="hint">Cần hỗ trợ về đơn hàng này? <a class="link-blue" href="'.link_to('contact').'">Liên hệ bộ phận CSKH →</a></p>';
             echo '</aside></div>';
         }
     }

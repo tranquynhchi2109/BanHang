@@ -154,8 +154,14 @@ try {
                 redirect_to(admin_to('order',['id'=>$id]));
             case 'save_order_notes':
                 $id=as_int($_POST['id']??0);
-                save_order_notes($id,$adminId,$_POST);
-                notice('Đã lưu ghi chú và thông tin vận chuyển.','success');
+                $noteRes=save_order_notes($id,$adminId,$_POST);
+                if (!$noteRes['changed']) {
+                    notice('Không có thay đổi nào cần lưu.','info');
+                } elseif ($noteRes['shipping_notified'] || $noteRes['customer_note_notified']) {
+                    notice('Đã lưu ghi chú/vận chuyển và gửi thông báo tới khách hàng.','success');
+                } else {
+                    notice('Đã lưu ghi chú nội bộ và thông tin đơn hàng.','success');
+                }
                 redirect_to(admin_to('order',['id'=>$id]));
             case 'mark_paid':
                 if ((string)($_POST['verified_receipt']??'')!=='1')
@@ -1051,14 +1057,16 @@ elseif ($page==='settings') {
 
     // SMTP & Email Outbox monitoring panel
     $smtpCfg=smtp_config();
-    $outboxCounts=row("SELECT SUM(status='SENT') AS sent_n, SUM(status='PENDING') AS pending_n, SUM(status='FAILED') AS failed_n, SUM(status='SKIPPED') AS skipped_n FROM tbl_email_outbox");
+    $smtpErr=smtp_validate_config($smtpCfg);
+    $outboxCounts=row("SELECT SUM(status='SENT') AS sent_n, SUM(status='PENDING') AS pending_n, SUM(status='PROCESSING') AS proc_n, SUM(status='FAILED') AS failed_n, SUM(status='SKIPPED') AS skipped_n FROM tbl_email_outbox");
     echo '<section class="surface admin-grid--spaced"><h2>Email thông báo (SMTP Outbox)</h2>';
-    if (smtp_is_configured()) {
-        echo '<p><span class="status-pill status-pill--success">SMTP đã cấu hình</span> · Host: <strong>'.h($smtpCfg['host']).':'.(int)$smtpCfg['port'].'</strong> ('.h($smtpCfg['secure']).') · Từ: <strong>'.h($smtpCfg['from_email']).'</strong></p>';
+    if ($smtpErr===null) {
+        echo '<p><span class="status-pill status-pill--success">SMTP đã cấu hình hợp lệ</span> · Host: <strong>'.h($smtpCfg['host']).':'.(int)$smtpCfg['port'].'</strong> ('.h($smtpCfg['secure']).') · Từ: <strong>'.h($smtpCfg['from_email']).'</strong></p>';
     } else {
-        echo '<p><span class="status-pill status-pill--warning">SMTP chưa cấu hình</span> · Cấu hình qua biến môi trường hoặc <code>admin/config/config.local.php</code> (xem mẫu <code>config.local.example.php</code>). Website và trung tâm thông báo khách hàng vẫn hoạt động bình thường.</p>';
+        echo '<p><span class="status-pill status-pill--warning">SMTP chưa sẵn sàng</span> · '.h($smtpErr).' Cấu hình qua biến môi trường hoặc <code>admin/config/config.local.php</code> (xem mẫu <code>config.local.example.php</code>). Website và trung tâm thông báo khách hàng vẫn hoạt động bình thường.</p>';
     }
-    echo '<p>Thống kê hàng đợi: Đã gửi <strong>'.(int)($outboxCounts['sent_n']??0).'</strong> · Đang chờ <strong>'.(int)($outboxCounts['pending_n']??0).'</strong> · Thất bại <strong>'.(int)($outboxCounts['failed_n']??0).'</strong> · Bỏ qua (chưa bật SMTP) <strong>'.(int)($outboxCounts['skipped_n']??0).'</strong></p>';
+    echo '<p>Thống kê hàng đợi: Đã gửi <strong>'.(int)($outboxCounts['sent_n']??0).'</strong> · Đang chờ <strong>'.(int)($outboxCounts['pending_n']??0).'</strong> · Đang xử lý <strong>'.(int)($outboxCounts['proc_n']??0).'</strong> · Thất bại <strong>'.(int)($outboxCounts['failed_n']??0).'</strong> · Bỏ qua <strong>'.(int)($outboxCounts['skipped_n']??0).'</strong></p>';
+    echo '<p class="hint">Lưu ý: Các email trạng thái SKIPPED từ thời điểm chưa cấu hình SMTP sẽ KHÔNG bị tự động gửi hàng loạt khi bật SMTP về sau.</p>';
     echo '<form method="post" class="inline-form">'.csrf_field().'<input type="hidden" name="action" value="retry_email_outbox"><button type="submit" class="button button--light">Xử lý / thử gửi lại hàng đợi email</button></form>';
     $recentMail=rows('SELECT id,recipient_email,event_type,subject,status,attempts,last_error,created_at,sent_at FROM tbl_email_outbox ORDER BY id DESC LIMIT 10');
     if ($recentMail) {

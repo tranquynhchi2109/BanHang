@@ -337,15 +337,52 @@ CREATE TABLE IF NOT EXISTS tbl_email_outbox (
   subject VARCHAR(200) NOT NULL,
   body_html MEDIUMTEXT NOT NULL,
   body_text TEXT NOT NULL,
-  status ENUM('PENDING','SENT','FAILED','SKIPPED') NOT NULL DEFAULT 'PENDING',
+  status ENUM('PENDING','PROCESSING','SENT','FAILED','SKIPPED') NOT NULL DEFAULT 'PENDING',
   attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
   last_error VARCHAR(500) NOT NULL DEFAULT '',
+  claimed_at DATETIME NULL,
+  claim_token VARCHAR(40) NULL,
+  next_retry_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   sent_at DATETIME NULL,
   UNIQUE KEY uniq_email_dedup (dedup_key),
   INDEX idx_outbox_status_created (status,created_at),
+  INDEX idx_outbox_claim (status,claimed_at),
+  INDEX idx_outbox_retry (status,attempts,next_retry_at),
   CONSTRAINT fk_banhang_outbox_order FOREIGN KEY (order_id) REFERENCES tbl_orders(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Idempotent email outbox upgrades for atomic claiming & controlled retry.
+SET @bh_outbox_has_proc=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_email_outbox' AND COLUMN_NAME='status' AND COLUMN_TYPE LIKE '%PROCESSING%');
+SET @bh_outbox_enum_sql=IF(@bh_outbox_has_proc=0,
+  'ALTER TABLE tbl_email_outbox MODIFY COLUMN status ENUM(''PENDING'',''PROCESSING'',''SENT'',''FAILED'',''SKIPPED'') NOT NULL DEFAULT ''PENDING''',
+  'SELECT 1');
+PREPARE bh_ob_enum FROM @bh_outbox_enum_sql; EXECUTE bh_ob_enum; DEALLOCATE PREPARE bh_ob_enum;
+
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_email_outbox' AND COLUMN_NAME='claimed_at');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_email_outbox ADD COLUMN claimed_at DATETIME NULL AFTER last_error','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_email_outbox' AND COLUMN_NAME='claim_token');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_email_outbox ADD COLUMN claim_token VARCHAR(40) NULL AFTER claimed_at','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_email_outbox' AND COLUMN_NAME='next_retry_at');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_email_outbox ADD COLUMN next_retry_at DATETIME NULL AFTER claim_token','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+
+SET @bh_index_exists=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+  WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_email_outbox' AND INDEX_NAME='idx_outbox_claim');
+SET @bh_index_sql=IF(@bh_index_exists=0,
+  'ALTER TABLE tbl_email_outbox ADD INDEX idx_outbox_claim (status,claimed_at)','SELECT 1');
+PREPARE bh_idx FROM @bh_index_sql; EXECUTE bh_idx; DEALLOCATE PREPARE bh_idx;
+
+SET @bh_index_exists=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+  WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_email_outbox' AND INDEX_NAME='idx_outbox_retry');
+SET @bh_index_sql=IF(@bh_index_exists=0,
+  'ALTER TABLE tbl_email_outbox ADD INDEX idx_outbox_retry (status,attempts,next_retry_at)','SELECT 1');
+PREPARE bh_idx FROM @bh_index_sql; EXECUTE bh_idx; DEALLOCATE PREPARE bh_idx;
 
 SELECT 'tbl_sanpham' AS bang,COUNT(*) AS so_dong FROM tbl_sanpham
 UNION ALL SELECT 'tbl_orders',COUNT(*) FROM tbl_orders

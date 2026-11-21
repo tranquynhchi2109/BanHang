@@ -2,23 +2,35 @@
 declare(strict_types=1);
 
 /**
- * BanHang optional SMTP Email Outbox.
+ * BanHang Hardened Optional SMTP & Email Outbox Service.
  * - Never sends network mail inside a DB transaction.
- * - Uses PHPMailer automatically if installed via Composer, otherwise native PHP SMTP sockets.
- * - Never claims an email was sent when SMTP is unconfigured or delivery fails.
+ * - Enforces TLS/SSL before SMTP AUTH (never allows AUTH LOGIN on unencrypted TCP,
+ *   never silently downgrades invalid SMTP_SECURE values to plain TCP).
+ * - Sanitizes all errors so SMTP credentials are never written to logs or DB.
+ * - Uses atomic DB claiming (PENDING/FAILED -> PROCESSING -> SENT/FAILED) compatible
+ *   with both MariaDB 10.4+ and MySQL 8.0, with stale-claim recovery and retry cap.
+ * - Does NOT auto-flood historical SKIPPED rows when SMTP is enabled later.
+ * - Note: SMTP does not guarantee distributed exactly-once delivery across network
+ *   drops after DATA; atomic claiming prevents concurrent duplicate dispatches.
  */
 
-function smtp_config(): array
+const EMAIL_OUTBOX_MAX_ATTEMPTS = 3;
+const EMAIL_OUTBOX_STALE_MINUTES = 5;
+
+function smtp_config(bool $fresh = false): array
 {
     static $cached = null;
-    if ($cached !== null) return $cached;
+    if ($cached !== null && !$fresh) return $cached;
     $local = is_file(__DIR__ . '/admin/config/config.local.php') ? require __DIR__ . '/admin/config/config.local.php' : [];
     $get = static fn(string $key, string $default = ''): string =>
         trim((string)(getenv($key) !== false ? getenv($key) : ($local[$key] ?? $default)));
 
+    $portRaw = $get('SMTP_PORT', '587');
+    $port = filter_var($portRaw, FILTER_VALIDATE_INT) !== false ? (int)$portRaw : 0;
+
     $cached = [
         'host' => $get('SMTP_HOST'),
-        'port' => max(1, (int)$get('SMTP_PORT', '587')),
+        'port' => $port,
         'secure' => strtolower($get('SMTP_SECURE', 'tls')),
         'user' => $get('SMTP_USER'),
         'pass' => (string)(getenv('SMTP_PASS') !== false ? getenv('SMTP_PASS') : ($local['SMTP_PASS'] ?? '')),
@@ -28,10 +40,58 @@ function smtp_config(): array
     return $cached;
 }
 
-function smtp_is_configured(): bool
+/**
+ * Returns null if valid, or a descriptive validation error message if misconfigured/unsafe.
+ */
+function smtp_validate_config(array $cfg): ?string
 {
-    $cfg = smtp_config();
-    return $cfg['host'] !== '' && filter_var($cfg['from_email'], FILTER_VALIDATE_EMAIL) !== false;
+    $host = trim((string)($cfg['host'] ?? ''));
+    if ($host === '') return 'SMTP_HOST chưa được cấu hình.';
+    if (preg_match('/[\s\x00-\x1F\x7F]/', $host)) return 'SMTP_HOST chứa ký tự không hợp lệ.';
+
+    $port = (int)($cfg['port'] ?? 0);
+    if ($port < 1 || $port > 65535) return 'SMTP_PORT phải nằm trong khoảng 1–65535.';
+
+    $secure = strtolower(trim((string)($cfg['secure'] ?? '')));
+    if (!in_array($secure, ['tls', 'ssl', 'none'], true)) {
+        return 'SMTP_SECURE không hợp lệ (chỉ chấp nhận tls, ssl hoặc none không xác thực).';
+    }
+
+    $fromEmail = trim((string)($cfg['from_email'] ?? ''));
+    if ($fromEmail === '' || filter_var($fromEmail, FILTER_VALIDATE_EMAIL) === false || preg_match('/[\r\n]/', $fromEmail)) {
+        return 'SMTP_FROM_EMAIL không hợp lệ.';
+    }
+
+    $user = trim((string)($cfg['user'] ?? ''));
+    $pass = (string)($cfg['pass'] ?? '');
+    if ($user !== '' || $pass !== '') {
+        if ($user === '' || $pass === '') {
+            return 'Thiếu SMTP_USER hoặc SMTP_PASS khi bật xác thực SMTP.';
+        }
+        if (!in_array($secure, ['tls', 'ssl'], true)) {
+            return 'Không cho phép xác thực SMTP AUTH trên kết nối không mã hóa (phải dùng tls hoặc ssl).';
+        }
+    }
+
+    return null;
+}
+
+function smtp_is_configured(bool $fresh = false): bool
+{
+    return smtp_validate_config(smtp_config($fresh)) === null;
+}
+
+function smtp_sanitize_error(string $message, string $secret = ''): string
+{
+    $clean = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', ' ', $message) ?? $message;
+    if ($secret !== '') {
+        $clean = str_replace($secret, '[REDACTED]', $clean);
+        $b64 = base64_encode($secret);
+        if ($b64 !== '') {
+            $clean = str_replace($b64, '[REDACTED]', $clean);
+        }
+    }
+    return mb_substr(trim($clean), 0, 480);
 }
 
 function render_order_email(string $eventType, array $order, string $extraMessage = ''): array
@@ -149,12 +209,13 @@ function queue_order_email(array $order, string $eventType, string $extraMessage
     if ($userId < 1) return;
     $user = row('SELECT email FROM tbl_dangky WHERE id_dangky = ? LIMIT 1', [$userId]);
     $email = trim((string)($user['email'] ?? ''));
-    if ($email === '' || filter_var($email, FILTER_VALIDATE_EMAIL) === false) return;
+    if ($email === '' || filter_var($email, FILTER_VALIDATE_EMAIL) === false || preg_match('/[\r\n]/', $email)) return;
 
     $rendered = render_order_email($eventType, $order, $extraMessage);
-    $configured = smtp_is_configured();
+    $cfgError = smtp_validate_config(smtp_config());
+    $configured = ($cfgError === null);
     $status = $configured ? 'PENDING' : 'SKIPPED';
-    $lastError = $configured ? '' : 'SMTP chưa được cấu hình; thông báo vẫn được lưu trong hệ thống website.';
+    $lastError = $configured ? '' : ($cfgError . ' Thông báo vẫn được lưu trong hệ thống website.');
 
     run(
         'INSERT IGNORE INTO tbl_email_outbox(order_id,user_id,recipient_email,event_type,dedup_key,subject,body_html,body_text,status,last_error)
@@ -169,7 +230,7 @@ function queue_order_email(array $order, string $eventType, string $extraMessage
             $rendered['html'],
             $rendered['text'],
             $status,
-            $lastError,
+            mb_substr($lastError, 0, 480),
         ]
     );
 }
@@ -181,25 +242,50 @@ function smtp_read_response($socket): string
         $response .= $line;
         if (strlen($line) < 4 || $line[3] === ' ') break;
     }
+    $meta = stream_get_meta_data($socket);
+    if (!empty($meta['timed_out'])) {
+        throw new RuntimeException('Kết nối SMTP hết thời gian chờ (timeout).');
+    }
+    if ($response === '') {
+        throw new RuntimeException('Kết nối SMTP bị ngắt đột ngột.');
+    }
     return $response;
 }
 
-function smtp_command($socket, string $command, array $expectedCodes): string
+function smtp_command($socket, string $command, array $expectedCodes, bool $redactInError = false): string
 {
-    fwrite($socket, $command . "\r\n");
+    $written = @fwrite($socket, $command . "\r\n");
+    if ($written === false) {
+        throw new RuntimeException('Không thể ghi dữ liệu tới máy chủ SMTP.');
+    }
     $resp = smtp_read_response($socket);
     $code = (int)substr($resp, 0, 3);
     if (!in_array($code, $expectedCodes, true)) {
-        throw new RuntimeException('SMTP error (' . $code . '): ' . trim($resp));
+        $detail = $redactInError ? 'Xác thực SMTP thất bại (kiểm tra tài khoản/mật khẩu).' : ('SMTP error (' . $code . '): ' . trim($resp));
+        throw new RuntimeException($detail);
     }
     return $resp;
 }
 
-function smtp_deliver_message(string $to, string $subject, string $html, string $text): void
+function smtp_deliver_message(string $to, string $subject, string $html, string $text, ?array $cfgOverride = null): void
 {
-    $cfg = smtp_config();
-    if (!smtp_is_configured()) {
-        throw new RuntimeException('SMTP chưa được cấu hình.');
+    $to = trim($to);
+    if ($to === '' || filter_var($to, FILTER_VALIDATE_EMAIL) === false || preg_match('/[\r\n]/', $to)) {
+        throw new RuntimeException('Địa chỉ email người nhận không hợp lệ.');
+    }
+    $cfg = $cfgOverride ?? smtp_config();
+    $cfgError = smtp_validate_config($cfg);
+    if ($cfgError !== null) {
+        throw new RuntimeException($cfgError);
+    }
+
+    $secret = (string)($cfg['pass'] ?? '');
+    $secure = strtolower((string)$cfg['secure']);
+    $useAuth = trim((string)$cfg['user']) !== '';
+
+    // Double-check invariant: never authenticate over unencrypted transport
+    if ($useAuth && !in_array($secure, ['tls', 'ssl'], true)) {
+        throw new RuntimeException('Không cho phép xác thực SMTP AUTH trên kết nối chưa mã hóa.');
     }
 
     // Use PHPMailer automatically if installed in vendor/autoload.php
@@ -208,37 +294,78 @@ function smtp_deliver_message(string $to, string $subject, string $html, string 
         require_once $autoload;
     }
     if (class_exists('\\PHPMailer\\PHPMailer\\PHPMailer')) {
-        $mailerClass = '\\PHPMailer\\PHPMailer\\PHPMailer';
-        $mail = new $mailerClass(true);
-        $mail->CharSet = 'UTF-8';
-        $mail->isSMTP();
-        $mail->Host = $cfg['host'];
-        $mail->Port = $cfg['port'];
-        $mail->Timeout = 8;
-        if ($cfg['user'] !== '') {
-            $mail->SMTPAuth = true;
-            $mail->Username = $cfg['user'];
-            $mail->Password = $cfg['pass'];
+        try {
+            $mailerClass = '\\PHPMailer\\PHPMailer\\PHPMailer';
+            $mail = new $mailerClass(true);
+            $mail->CharSet = 'UTF-8';
+            $mail->isSMTP();
+            $mail->Host = $cfg['host'];
+            $mail->Port = (int)$cfg['port'];
+            $mail->Timeout = 8;
+            $mail->SMTPAutoTLS = false;
+            if ($secure === 'ssl') {
+                $mail->SMTPSecure = 'ssl';
+            } elseif ($secure === 'tls') {
+                $mail->SMTPSecure = 'tls';
+            } else {
+                $mail->SMTPSecure = '';
+            }
+            $mail->SMTPOptions = [
+                'ssl' => [
+                    'verify_peer' => true,
+                    'verify_peer_name' => true,
+                    'allow_self_signed' => false,
+                ],
+            ];
+            if ($useAuth) {
+                $mail->SMTPAuth = true;
+                $mail->Username = $cfg['user'];
+                $mail->Password = $secret;
+            }
+            $mail->setFrom($cfg['from_email'], $cfg['from_name']);
+            $mail->addAddress($to);
+            $mail->isHTML(true);
+            $mail->Subject = $subject;
+            $mail->Body = $html;
+            $mail->AltBody = $text;
+            $mail->send();
+            return;
+        } catch (Throwable $e) {
+            throw new RuntimeException(smtp_sanitize_error($e->getMessage(), $secret), 0, $e);
         }
-        if ($cfg['secure'] === 'ssl') $mail->SMTPSecure = 'ssl';
-        elseif ($cfg['secure'] === 'tls') $mail->SMTPSecure = 'tls';
-        $mail->setFrom($cfg['from_email'], $cfg['from_name']);
-        $mail->addAddress($to);
-        $mail->isHTML(true);
-        $mail->Subject = $subject;
-        $mail->Body = $html;
-        $mail->AltBody = $text;
-        $mail->send();
-        return;
     }
 
-    // Native PHP SMTP socket delivery fallback (TLS/SSL/PLAIN, no Composer required)
-    $transport = $cfg['secure'] === 'ssl' ? 'ssl://' : 'tcp://';
-    $socket = @stream_socket_client($transport . $cfg['host'] . ':' . $cfg['port'], $errno, $errstr, 8);
+    // Native PHP SMTP socket delivery fallback (TLS/SSL strict, no silent plain-TCP downgrade)
+    if ($secure === 'ssl') {
+        $transport = 'ssl://';
+        $isEncrypted = true;
+    } elseif ($secure === 'tls' || $secure === 'none') {
+        $transport = 'tcp://';
+        $isEncrypted = false;
+    } else {
+        throw new RuntimeException('Chế độ bảo mật SMTP không được hỗ trợ.');
+    }
+
+    $context = stream_context_create([
+        'ssl' => [
+            'verify_peer' => true,
+            'verify_peer_name' => true,
+            'allow_self_signed' => false,
+        ],
+    ]);
+    $socket = @stream_socket_client(
+        $transport . $cfg['host'] . ':' . (int)$cfg['port'],
+        $errno,
+        $errstr,
+        8,
+        STREAM_CLIENT_CONNECT,
+        $context
+    );
     if (!$socket) {
-        throw new RuntimeException("Không kết nối được SMTP ({$errno}): {$errstr}");
+        throw new RuntimeException(smtp_sanitize_error("Không kết nối được SMTP ({$errno}): {$errstr}", $secret));
     }
     stream_set_timeout($socket, 8);
+
     try {
         $greeting = smtp_read_response($socket);
         if ((int)substr($greeting, 0, 3) !== 220) {
@@ -246,25 +373,35 @@ function smtp_deliver_message(string $to, string $subject, string $html, string 
         }
         $hostName = preg_replace('/[^a-zA-Z0-9.\-]/', '', (string)($_SERVER['SERVER_NAME'] ?? 'localhost')) ?: 'localhost';
         smtp_command($socket, 'EHLO ' . $hostName, [250]);
-        if ($cfg['secure'] === 'tls') {
+
+        if ($secure === 'tls') {
             smtp_command($socket, 'STARTTLS', [220]);
-            if (!@stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) {
-                throw new RuntimeException('Không thể bật mã hóa STARTTLS.');
+            $cryptoMethod = defined('STREAM_CRYPTO_METHOD_TLSv1_3_CLIENT')
+                ? (STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT | STREAM_CRYPTO_METHOD_TLSv1_3_CLIENT)
+                : STREAM_CRYPTO_METHOD_TLS_CLIENT;
+            if (!@stream_socket_enable_crypto($socket, true, $cryptoMethod)) {
+                throw new RuntimeException('Không thể bật mã hóa STARTTLS (TLS 1.2+).');
             }
+            $isEncrypted = true;
             smtp_command($socket, 'EHLO ' . $hostName, [250]);
         }
-        if ($cfg['user'] !== '') {
+
+        if ($useAuth) {
+            if (!$isEncrypted) {
+                throw new RuntimeException('Từ chối xác thực SMTP AUTH trên kết nối chưa mã hóa TLS/SSL.');
+            }
             smtp_command($socket, 'AUTH LOGIN', [334]);
-            smtp_command($socket, base64_encode($cfg['user']), [334]);
-            smtp_command($socket, base64_encode($cfg['pass']), [235]);
+            smtp_command($socket, base64_encode($cfg['user']), [334], true);
+            smtp_command($socket, base64_encode($secret), [235], true);
         }
+
         smtp_command($socket, 'MAIL FROM:<' . $cfg['from_email'] . '>', [250]);
         smtp_command($socket, 'RCPT TO:<' . $to . '>', [250, 251]);
         smtp_command($socket, 'DATA', [354]);
 
         $boundary = 'bh_' . bin2hex(random_bytes(10));
-        $encodedSubject = '=?UTF-8?B?' . base64_encode($subject) . '?=';
-        $encodedFrom = '=?UTF-8?B?' . base64_encode($cfg['from_name']) . '?=';
+        $encodedSubject = '=?UTF-8?B?' . base64_encode(str_replace(["\r", "\n"], ' ', $subject)) . '?=';
+        $encodedFrom = '=?UTF-8?B?' . base64_encode(str_replace(["\r", "\n"], ' ', (string)$cfg['from_name'])) . '?=';
         $headers = [
             'From: ' . $encodedFrom . ' <' . $cfg['from_email'] . '>',
             'To: <' . $to . '>',
@@ -285,49 +422,131 @@ function smtp_deliver_message(string $to, string $subject, string $html, string 
             . "--{$boundary}--\r\n.";
         smtp_command($socket, $body, [250]);
         @fwrite($socket, "QUIT\r\n");
+    } catch (Throwable $e) {
+        throw new RuntimeException(smtp_sanitize_error($e->getMessage(), $secret), 0, $e);
     } finally {
         fclose($socket);
     }
 }
 
-function dispatch_email_outbox(int $limit = 5): array
+/**
+ * Recover rows stuck in PROCESSING beyond stale threshold so crashes never hang the queue.
+ */
+function recover_stale_outbox_rows(int $staleMinutes = EMAIL_OUTBOX_STALE_MINUTES): int
 {
-    $stats = ['sent' => 0, 'failed' => 0, 'skipped' => 0];
+    $staleMinutes = max(1, min(1440, $staleMinutes));
+    $maxAttempts = EMAIL_OUTBOX_MAX_ATTEMPTS;
+    return run(
+        "UPDATE tbl_email_outbox
+         SET status = CASE WHEN attempts >= {$maxAttempts} THEN 'FAILED' ELSE 'PENDING' END,
+             claim_token = NULL,
+             claimed_at = NULL,
+             last_error = CASE WHEN last_error = '' THEN 'Phiên gửi email trước bị gián đoạn; đã khôi phục hàng đợi.' ELSE last_error END
+         WHERE status = 'PROCESSING' AND claimed_at IS NOT NULL AND claimed_at < NOW() - INTERVAL {$staleMinutes} MINUTE"
+    );
+}
+
+/**
+ * Atomically claim eligible PENDING/FAILED rows under InnoDB row locks (works on both
+ * MariaDB 10.4+ and MySQL 8.0 without requiring SKIP LOCKED).
+ * Never claims SENT or SKIPPED rows.
+ */
+function claim_email_outbox_batch(int $limit = 5, ?string $claimToken = null): array
+{
+    recover_stale_outbox_rows();
+    $limit = max(1, min(20, $limit));
+    $maxAttempts = EMAIL_OUTBOX_MAX_ATTEMPTS;
+    $token = $claimToken ?? bin2hex(random_bytes(16));
+
+    $claimedCount = run(
+        "UPDATE tbl_email_outbox
+         SET status = 'PROCESSING',
+             claim_token = ?,
+             claimed_at = NOW(),
+             attempts = attempts + 1
+         WHERE status IN ('PENDING', 'FAILED')
+           AND attempts < {$maxAttempts}
+           AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+         ORDER BY id ASC
+         LIMIT {$limit}",
+        [$token]
+    );
+    if ($claimedCount < 1) return [];
+
+    return rows(
+        "SELECT id,order_id,user_id,recipient_email,event_type,subject,body_html,body_text,attempts,claim_token
+         FROM tbl_email_outbox
+         WHERE status = 'PROCESSING' AND claim_token = ?
+         ORDER BY id ASC",
+        [$token]
+    );
+}
+
+/**
+ * Process email outbox outside any DB transaction.
+ * Optional $sender callable allows deterministic unit/integration testing without external SMTP.
+ * Historical SKIPPED rows are NOT auto-dispatched when SMTP is later enabled.
+ */
+function dispatch_email_outbox(int $limit = 5, ?callable $sender = null): array
+{
+    $stats = ['sent' => 0, 'failed' => 0, 'skipped' => 0, 'claimed' => 0];
     if (db()->inTransaction()) return $stats;
 
-    if (!smtp_is_configured()) {
+    $cfg = smtp_config();
+    $cfgError = smtp_validate_config($cfg);
+    if ($sender === null && $cfgError !== null) {
+        $msg = mb_substr($cfgError . ' Thông báo vẫn hiển thị trên website.', 0, 480);
         $skipped = run(
-            "UPDATE tbl_email_outbox SET status='SKIPPED', last_error='SMTP chưa được cấu hình; thông báo vẫn hiển thị trên website.' WHERE status='PENDING'"
+            "UPDATE tbl_email_outbox SET status='SKIPPED', last_error=?, claim_token=NULL, claimed_at=NULL WHERE status='PENDING'",
+            [$msg]
         );
         $stats['skipped'] = $skipped;
         return $stats;
     }
 
-    $limit = max(1, min(20, $limit));
-    $items = rows(
-        "SELECT id,recipient_email,subject,body_html,body_text,attempts
-         FROM tbl_email_outbox
-         WHERE status IN ('PENDING','FAILED') AND attempts < 3
-         ORDER BY id ASC LIMIT {$limit}"
-    );
+    $items = claim_email_outbox_batch($limit);
+    $stats['claimed'] = count($items);
+    $secret = (string)($cfg['pass'] ?? '');
+
     foreach ($items as $item) {
+        $id = (int)$item['id'];
+        $token = (string)$item['claim_token'];
+        $attempts = (int)$item['attempts'];
         try {
-            smtp_deliver_message(
-                (string)$item['recipient_email'],
-                (string)$item['subject'],
-                (string)$item['body_html'],
-                (string)$item['body_text']
-            );
+            if ($sender !== null) {
+                $sender(
+                    (string)$item['recipient_email'],
+                    (string)$item['subject'],
+                    (string)$item['body_html'],
+                    (string)$item['body_text'],
+                    $item
+                );
+            } else {
+                smtp_deliver_message(
+                    (string)$item['recipient_email'],
+                    (string)$item['subject'],
+                    (string)$item['body_html'],
+                    (string)$item['body_text'],
+                    $cfg
+                );
+            }
             run(
-                "UPDATE tbl_email_outbox SET status='SENT', attempts=attempts+1, last_error='', sent_at=NOW() WHERE id=?",
-                [(int)$item['id']]
+                "UPDATE tbl_email_outbox
+                 SET status='SENT', last_error='', sent_at=NOW(), claim_token=NULL, claimed_at=NULL, next_retry_at=NULL
+                 WHERE id=? AND claim_token=? AND status='PROCESSING'",
+                [$id, $token]
             );
             $stats['sent']++;
         } catch (Throwable $e) {
-            error_log('[BanHang mail] #' . (int)$item['id'] . ' ' . $e->getMessage());
+            $safeErr = smtp_sanitize_error($e->getMessage(), $secret);
+            error_log('[BanHang mail] #' . $id . ' ' . $safeErr);
+            $backoffMin = min(30, 2 * max(1, $attempts));
             run(
-                "UPDATE tbl_email_outbox SET status='FAILED', attempts=attempts+1, last_error=? WHERE id=?",
-                [mb_substr($e->getMessage(), 0, 480), (int)$item['id']]
+                "UPDATE tbl_email_outbox
+                 SET status='FAILED', last_error=?, claim_token=NULL, claimed_at=NULL,
+                     next_retry_at=DATE_ADD(NOW(), INTERVAL {$backoffMin} MINUTE)
+                 WHERE id=? AND claim_token=? AND status='PROCESSING'",
+                [$safeErr, $id, $token]
             );
             $stats['failed']++;
         }

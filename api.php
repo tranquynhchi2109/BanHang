@@ -81,30 +81,65 @@ try {
             json_out(['ok' => false, 'error' => 'Mã đơn hàng không hợp lệ'], 400);
         }
         $order = row(
-            'SELECT id,order_code,total_amount,payment_method,payment_status,payment_review_status,order_status,shipping_carrier,tracking_code,cancel_reason,updated_at,payment_verified_at
+            'SELECT id,order_code,total_amount,payment_method,payment_status,payment_review_status,order_status,
+                    shipping_carrier,tracking_code,shipped_at,delivered_at,cancel_reason,customer_note,
+                    created_at,updated_at,payment_verified_at,cod_paid_at
              FROM tbl_orders WHERE order_code=? AND user_id=? LIMIT 1',
             [$code, (int)$user['id_dangky']]
         );
         if (!$order) json_out(['ok' => false, 'error' => 'Không tìm thấy đơn hàng'], 404);
         $payState = payment_state_summary($order);
-        $histCount = (int)(row('SELECT COUNT(*) AS n FROM tbl_order_status_history WHERE order_id=? AND is_public=1', [(int)$order['id']])['n'] ?? 0);
+        $publicHistory = rows(
+            'SELECT from_status,to_status,note,created_at FROM tbl_order_status_history WHERE order_id=? AND is_public=1 ORDER BY id ASC',
+            [(int)$order['id']]
+        );
+        $timeline = build_order_timeline($order, $publicHistory);
+        $historyItems = array_map(static fn(array $ev): array => [
+            'label' => order_status_label((string)$ev['to_status']),
+            'note' => (string)($ev['note'] ?? ''),
+            'created_at' => (string)$ev['created_at'],
+        ], array_slice(array_reverse($publicHistory), 0, 20));
+        $histCount = count($publicHistory);
+        $signature = implode('|', [
+            (string)$order['order_status'],
+            (string)$order['payment_status'],
+            (string)$order['payment_review_status'],
+            (string)($order['shipping_carrier'] ?? ''),
+            (string)($order['tracking_code'] ?? ''),
+            (string)($order['customer_note'] ?? ''),
+            (string)$order['updated_at'],
+            (string)$histCount,
+        ]);
+        $isFinal = ($order['order_status'] === 'CANCELLED')
+            || ($order['order_status'] === 'COMPLETED' && $order['payment_status'] === 'PAID');
         json_out([
             'ok' => true,
             'order_code' => (string)$order['order_code'],
+            'total_amount_formatted' => money((int)$order['total_amount']),
             'order_status' => (string)$order['order_status'],
             'order_status_label' => order_status_label((string)$order['order_status']),
+            'order_status_tone' => order_status_tone((string)$order['order_status']),
             'payment_method' => (string)$order['payment_method'],
             'payment_method_label' => payment_method_label((string)$order['payment_method']),
             'payment_status' => (string)$order['payment_status'],
             'payment_review_status' => (string)$order['payment_review_status'],
+            'payment_review_label' => payment_review_label((string)$order['payment_review_status']),
             'payment_label' => $payState['label'],
             'payment_tone' => $payState['tone'],
             'shipping_carrier' => (string)($order['shipping_carrier'] ?? ''),
             'tracking_code' => (string)($order['tracking_code'] ?? ''),
+            'shipped_at' => (string)($order['shipped_at'] ?? ''),
+            'delivered_at' => (string)($order['delivered_at'] ?? ''),
             'cancel_reason' => (string)($order['cancel_reason'] ?? ''),
-            'payment_verified_at' => $order['payment_verified_at'],
+            'customer_note' => (string)($order['customer_note'] ?? ''),
+            'payment_verified_at' => (string)($order['payment_verified_at'] ?? ''),
+            'cod_paid_at' => (string)($order['cod_paid_at'] ?? ''),
             'updated_at' => (string)$order['updated_at'],
             'history_count' => $histCount,
+            'timeline' => $timeline,
+            'history' => $historyItems,
+            'signature' => $signature,
+            'is_final' => $isFinal,
         ]);
     }
 
