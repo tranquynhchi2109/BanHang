@@ -134,6 +134,24 @@ try {
                 report_bank_transfer($code,(int)$user['id_dangky'],(string)($_POST['transfer_note']??''));
                 notice('Đã nhận thông báo. Cửa hàng sẽ kiểm tra giao dịch MB Bank; đơn vẫn CHƯA được xác nhận thanh toán.','success');
                 redirect_to(link_to('order',['code'=>$code]));
+            case 'customer_cancel_order':
+                $user=require_customer();
+                $code=trim((string)($_POST['order_code']??''));
+                $result=customer_cancel_order($code,(int)$user['id_dangky'],(string)($_POST['cancel_reason']??''));
+                notice($result==='CANCELLED'
+                    ? 'Đơn hàng đã hủy thành công, tồn kho đã được hoàn lại.'
+                    : 'Đã gửi yêu cầu hủy tới cửa hàng. Đơn vẫn đang chờ xét duyệt.','success');
+                redirect_to(link_to('order',['code'=>$code]));
+            case 'customer_change_payment':
+                $user=require_customer();
+                $code=trim((string)($_POST['order_code']??''));
+                $method=(string)($_POST['payment_method']??'');
+                if ((string)($_POST['not_transferred']??'')!=='1') {
+                    throw new DomainException('Vui lòng xác nhận bạn chưa chuyển khoản cho đơn hàng này.');
+                }
+                customer_change_payment_method($code,(int)$user['id_dangky'],$method);
+                notice('Đã đổi phương thức thanh toán. Vui lòng kiểm tra lại thông tin đơn hàng.','success');
+                redirect_to(link_to('order',['code'=>$code]));
             case 'checkout':
                 $user=require_customer();
                 $cart=$_SESSION['cart']??[];
@@ -149,6 +167,9 @@ try {
 } catch (DomainException $e) {
     notice($e->getMessage(),'danger');
     if ((string)($_POST['action']??'')==='report_bank_transfer') {
+        redirect_to(link_to('order',['code'=>trim((string)($_POST['order_code']??''))]));
+    }
+    if (in_array((string)($_POST['action']??''),['customer_cancel_order','customer_change_payment'],true)) {
         redirect_to(link_to('order',['code'=>trim((string)($_POST['order_code']??''))]));
     }
     $target=match ((string)($_POST['action']??'')) {
