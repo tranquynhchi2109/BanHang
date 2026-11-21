@@ -565,6 +565,9 @@ function report_bank_transfer(string $code, int $customerId, string $note): void
         if ($order['payment_method']!=='BANK' || $order['payment_status']!=='UNPAID'
             || $order['order_status']==='CANCELLED') throw new DomainException('Đơn hàng không còn chờ chuyển khoản.');
         if ($order['payment_review_status']==='REPORTED') throw new DomainException('Đơn hàng đã được báo chuyển khoản, cửa hàng đang đối soát.');
+        if (row("SELECT id FROM tbl_order_cancel_requests WHERE order_id=? AND status='PENDING'",[(int)$order['id']])) {
+            throw new DomainException('Đơn đang chờ duyệt yêu cầu hủy. Vui lòng không thực hiện thêm giao dịch và liên hệ cửa hàng nếu đã chuyển tiền.');
+        }
         if ($order['payment_review_status']==='VERIFIED') throw new DomainException('Đơn hàng đã được xác nhận thanh toán.');
         run("UPDATE tbl_orders SET payment_review_status='REPORTED', payment_reported_at=NOW(), customer_transfer_note=?
              WHERE id=?",[$note,$order['id']]);
