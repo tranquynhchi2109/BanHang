@@ -329,6 +329,9 @@ elseif ($page==='orders' || $page==='order') {
                         echo '<option value="'.h($reason).'">'.h($reason).'</option>';
                     }
                     echo '</select></label>';
+                    if ($actions['can_cancel'] && $order['payment_method']==='BANK') {
+                        echo '<label class="payment-check"><input type="checkbox" name="not_transferred" value="1" required> Tôi xác nhận chưa chuyển khoản cho đơn này. Nếu đã chuyển tiền, tôi sẽ liên hệ cửa hàng để được đối soát.</label>';
+                    }
                     echo '<button type="submit" class="button button--danger" data-confirm="'.($actions['can_cancel']
                         ? 'Bạn chắc chắn muốn hủy đơn ngay? Tồn kho sẽ được hoàn lại.'
                         : 'Gửi yêu cầu hủy đến Admin? Đơn hàng CHƯA bị hủy cho đến khi được duyệt.').'">'
