@@ -102,11 +102,13 @@ try {
     action_ok(row('SELECT status FROM tbl_order_cancel_requests WHERE order_id=?',[$switch['id']])['status']==='DECLINED','Admin refusal stored');
     action_refuses(fn()=>customer_cancel_order($switch['code'],$ownerId,'Tiếp tục hủy lần hai'),'cannot spam already resolved request');
 
-    // 3: confirmed COD needs approval, then stock restores once on Admin cancellation.
+    // 3: confirmed COD needs approval, blocks forward progress while pending, then stock restores once on Admin cancellation.
     $confirmed=$makeOrder('CONF','COD','CONFIRMED');
     $beforeConfirm=(int)row('SELECT soluong FROM tbl_sanpham WHERE id_sanpham=?',[$productId])['soluong'];
     action_ok(customer_cancel_order($confirmed['code'],$ownerId,'Không còn nhu cầu mua')==='REQUESTED','confirmed COD request is pending');
     action_refuses(fn()=>customer_change_payment_method($confirmed['code'],$ownerId,'BANK'),'confirmed COD cannot switch payment');
+    action_refuses(fn()=>update_order_status($confirmed['id'],1,'PREPARING'),'Admin cannot advance status while cancel request pending');
+    action_refuses(fn()=>update_order_status($confirmed['id'],1,'SHIPPING'),'Admin cannot ship while cancel request pending');
     update_order_status($confirmed['id'],1,'CANCELLED',['cancel_reason'=>'Khách yêu cầu hủy: Không còn nhu cầu mua']);
     action_ok(row('SELECT status FROM tbl_order_cancel_requests WHERE order_id=?',[$confirmed['id']])['status']==='APPROVED','Admin cancellation approves request atomically');
     action_ok((int)row('SELECT soluong FROM tbl_sanpham WHERE id_sanpham=?',[$productId])['soluong']===$beforeConfirm+1,'Admin cancellation restored stock once');
@@ -130,6 +132,25 @@ try {
     action_ok(row('SELECT status FROM tbl_order_cancel_requests WHERE order_id=?',[$expired['id']])['status']==='APPROVED','manual expiry resolves pending cancel request');
     action_ok(row('SELECT order_status FROM tbl_orders WHERE id=?',[$expired['id']])['order_status']==='CANCELLED','manual expiry cancels order');
     action_ok((int)row("SELECT COUNT(*) AS n FROM tbl_inventory_movements WHERE order_id=? AND movement_type='ORDER_CANCEL_RESTORE'",[$expired['id']])['n']===1,'manual expiry restored stock once');
+
+    // 6: missing tbl_order_cancel_requests table degrades gracefully instead of crashing order detail / Admin.
+    $fallbackOrder=$makeOrder('FBK','COD','CONFIRMED');
+    $tmpTable='tbl_order_cancel_requests_bak_'.bin2hex(random_bytes(4));
+    db()->exec("RENAME TABLE tbl_order_cancel_requests TO `{$tmpTable}`");
+    try {
+        $missing=false;
+        action_ok(find_order_cancel_request($fallbackOrder['id'],$missing)===null && $missing===true,'missing table returns null safely');
+        $missingCount=false;
+        action_ok(pending_cancel_requests_count($missingCount)===0 && $missingCount===true,'missing table count returns 0 safely');
+        $missingMap=false;
+        action_ok(pending_cancel_request_order_ids([$fallbackOrder['id']],$missingMap)===[] && $missingMap===true,'missing table map returns empty safely');
+        action_refuses(fn()=>customer_cancel_order($fallbackOrder['code'],$ownerId,'Không còn nhu cầu mua'),'missing table returns DomainException on cancel request');
+        action_refuses(fn()=>admin_decline_cancel_request($fallbackOrder['id'],1,'Chưa thể hủy lúc này'),'missing table returns DomainException on admin decline');
+        update_order_status($fallbackOrder['id'],1,'PREPARING');
+        action_ok(row('SELECT order_status FROM tbl_orders WHERE id=?',[$fallbackOrder['id']])['order_status']==='PREPARING','order status update works without cancel table');
+    } finally {
+        db()->exec("RENAME TABLE `{$tmpTable}` TO tbl_order_cancel_requests");
+    }
 
     echo "Customer order action tests PASSED\n";
 } finally {

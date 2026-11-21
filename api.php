@@ -101,6 +101,9 @@ try {
             'created_at' => (string)$ev['created_at'],
         ], array_slice(array_reverse($publicHistory), 0, 20));
         $histCount = count($publicHistory);
+        $cancelSchemaMissing = false;
+        $cancelReq = find_order_cancel_request((int)$order['id'], $cancelSchemaMissing);
+        $cancelReqStatus = (string)($cancelReq['status'] ?? '');
         $signature = implode('|', [
             (string)$order['order_status'],
             (string)$order['payment_status'],
@@ -108,6 +111,7 @@ try {
             (string)($order['shipping_carrier'] ?? ''),
             (string)($order['tracking_code'] ?? ''),
             (string)($order['customer_note'] ?? ''),
+            $cancelReqStatus,
             (string)$order['updated_at'],
             (string)$histCount,
         ]);
@@ -142,6 +146,7 @@ try {
             'shipped_at' => (string)($order['shipped_at'] ?? ''),
             'delivered_at' => (string)($order['delivered_at'] ?? ''),
             'cancel_reason' => (string)($order['cancel_reason'] ?? ''),
+            'cancel_request_status' => $cancelReqStatus,
             'customer_note' => (string)($order['customer_note'] ?? ''),
             'payment_verified_at' => (string)($order['payment_verified_at'] ?? ''),
             'cod_paid_at' => (string)($order['cod_paid_at'] ?? ''),
@@ -159,10 +164,13 @@ try {
         if (!$admin) json_out(['ok' => false, 'error' => 'Unauthorized'], 401);
         $pendingRec = admin_pending_reconciliation_count();
         $pendingOrders = (int)(row("SELECT COUNT(*) AS n FROM tbl_orders WHERE order_status='PENDING'")['n'] ?? 0);
+        $cancelSchemaMissing = false;
+        $pendingCancel = pending_cancel_requests_count($cancelSchemaMissing);
         json_out([
             'ok' => true,
             'pending_reconciliation' => $pendingRec,
             'pending_orders' => $pendingOrders,
+            'pending_cancel_requests' => $pendingCancel,
             'server_time' => date('Y-m-d H:i:s'),
         ]);
     }

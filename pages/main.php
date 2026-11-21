@@ -1,4 +1,6 @@
 <?php
+$renderObLevel = ob_get_level();
+ob_start();
 try {
 echo '<main>';
 echo '<div class="container flash">'.(notices_html()??'').'</div>';
@@ -125,7 +127,10 @@ elseif ($page==='cart' || $page==='checkout') {
             echo '<form method="post">'.csrf_field().'<input type="hidden" name="action" value="cart_update"><input type="hidden" name="product_id" value="'.$id.'"><input type="hidden" name="cart_key" value="'.h($item['cart_key']).'"><input class="field qty" name="qty" type="number" min="0" max="20" value="'.(int)$item['cart_qty'].'"><button class="button button--light">Cập nhật</button></form></div>';
         }
     } else {
-        echo '<h2>Thông tin giao hàng</h2><form action="index.php" method="post" id="checkout-form">'.csrf_field().'<input type="hidden" name="action" value="checkout"><input type="hidden" name="expected_total" value="'.(int)$total.'">';
+        if (empty($_SESSION['checkout_token']) || !is_string($_SESSION['checkout_token'])) {
+            $_SESSION['checkout_token']=bin2hex(random_bytes(16));
+        }
+        echo '<h2>Thông tin giao hàng</h2><form action="index.php" method="post" id="checkout-form">'.csrf_field().'<input type="hidden" name="action" value="checkout"><input type="hidden" name="expected_total" value="'.(int)$total.'"><input type="hidden" name="checkout_token" value="'.h($_SESSION['checkout_token']).'">';
         input_field('name','Họ và tên',$user['tenkhachhang'],'text','required maxlength="160"');
         input_field('phone','Số điện thoại',$user['dienthoai'],'tel','required maxlength="25"');
         echo '<label class="field-group"><span>Địa chỉ nhận hàng</span><textarea class="field" name="address" minlength="10" maxlength="500" required>'.h($user['diachi']).'</textarea></label>';
@@ -274,6 +279,8 @@ elseif ($page==='orders' || $page==='order') {
             $history=rows('SELECT from_status,to_status,actor_type,note,created_at FROM tbl_order_status_history WHERE order_id=? AND is_public=1 ORDER BY id ASC',[(int)$order['id']]);
             $timeline=build_order_timeline($order,$history);
             $curStatus=(string)$order['order_status'];
+            $cancelSchemaMissing=false;
+            $cancelRequest=find_order_cancel_request((int)$order['id'],$cancelSchemaMissing);
             $sig=implode('|',[
                 $curStatus,
                 (string)$order['payment_status'],
@@ -281,6 +288,7 @@ elseif ($page==='orders' || $page==='order') {
                 (string)($order['shipping_carrier']??''),
                 (string)($order['tracking_code']??''),
                 (string)($order['customer_note']??''),
+                (string)($cancelRequest['status']??''),
                 (string)$order['updated_at'],
                 (string)count($history),
             ]);
@@ -309,11 +317,12 @@ elseif ($page==='orders' || $page==='order') {
             echo '</div>';
 
             // Customer order actions. Every POST handler rechecks eligibility under FOR UPDATE.
-            $cancelRequest = row('SELECT reason,status,admin_note,created_at FROM tbl_order_cancel_requests WHERE order_id=?',[(int)$order['id']]);
             $actions = customer_order_action_options($order);
             if ($curStatus !== 'COMPLETED' && $curStatus !== 'CANCELLED') {
                 echo '<section class="order-action-panel"><h3>Thay đổi hoặc hủy đơn hàng</h3>';
-                if ($cancelRequest && $cancelRequest['status']==='PENDING') {
+                if ($cancelSchemaMissing && !$actions['can_cancel'] && $actions['can_request_cancel']) {
+                    echo '<div class="alert info">Chức năng gửi yêu cầu hủy đơn trực tuyến đang tạm bảo trì. Vui lòng liên hệ cửa hàng nếu bạn cần hỗ trợ hủy đơn.</div>';
+                } elseif ($cancelRequest && $cancelRequest['status']==='PENDING') {
                     echo '<div class="payment-status-note"><strong>Yêu cầu hủy đang chờ xử lý</strong><p>Đã gửi lúc '.h($cancelRequest['created_at']).'. Cửa hàng sẽ xem xét; đơn chưa bị hủy. Lý do: '.h($cancelRequest['reason']).'</p></div>';
                 } elseif ($cancelRequest && $cancelRequest['status']==='DECLINED') {
                     echo '<div class="payment-alert"><strong>Yêu cầu hủy chưa được chấp thuận</strong><p>'.h($cancelRequest['admin_note']).'. Vui lòng liên hệ cửa hàng nếu cần hỗ trợ thêm.</p></div>';
@@ -491,8 +500,12 @@ elseif ($page==='contact') {
     echo '<div class="container section"><div class="surface prose">'.nl2br(h(strip_tags((string)($contact['thongtinlienhe'] ?? 'Thông tin liên hệ đang được cập nhật.')))).'</div></div>';
 }
 echo '</main>';
+ob_end_flush();
 } catch (Throwable $e) {
+    while (ob_get_level() > $renderObLevel) {
+        ob_end_clean();
+    }
     error_log('[BanHang rendering] '.$e->getMessage());
     http_response_code(500);
-    echo '<section class="container section"><div class="surface"><h1>Không thể hiển thị trang.</h1><p>Kiểm tra kết nối MySQL và đã import banhang.sql.</p></div></section>';
+    echo '<main><section class="container section"><div class="surface" style="max-width:690px;margin:24px auto"><h1>Không thể hiển thị trang lúc này.</h1><p>Hệ thống đang gặp sự cố khi tải dữ liệu. Nếu bạn vừa xác nhận đặt hàng, vui lòng kiểm tra mục <strong>Đơn hàng của tôi</strong> trước khi đặt lại để tránh tạo trùng đơn.</p><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px"><a class="button" href="'.h(link_to('orders')).'">Xem đơn hàng của tôi</a><a class="button button--light" href="'.h(link_to('home')).'">Về trang chủ</a></div></div></section></main>';
 }

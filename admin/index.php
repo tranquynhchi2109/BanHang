@@ -447,8 +447,12 @@ if ($page==='dashboard') {
     $lowStock=(int)(row('SELECT COUNT(*) AS n FROM tbl_sanpham WHERE soluong<=5')['n']??0);
     $customersCount=(int)(row('SELECT COUNT(*) AS n FROM tbl_dangky')['n']??0);
     $pendingRec=(int)($kpi['pending_reconciliation']??0);
-    $pendingCancellationCount=(int)(row("SELECT COUNT(*) AS n FROM tbl_order_cancel_requests WHERE status='PENDING'")['n']??0);
+    $cancelSchemaMissing=false;
+    $pendingCancellationCount=pending_cancel_requests_count($cancelSchemaMissing);
     admin_title('Tổng quan hệ thống','Theo dõi vận hành, đối soát thanh toán và doanh thu thực nhận.');
+    if ($cancelSchemaMissing) {
+        echo '<div class="alert danger">⚠️ Cơ sở dữ liệu chưa có bảng <code>tbl_order_cancel_requests</code>. Hãy sao lưu database hiện tại rồi import <code>banhang.sql</code> trong phpMyAdmin (không xóa dữ liệu cũ) để bật đầy đủ chức năng yêu cầu hủy đơn.</div>';
+    }
     if ($pendingCancellationCount>0) {
         echo '<div class="alert info admin-cta-banner"><span>📩 Có <strong>'.$pendingCancellationCount.'</strong> yêu cầu hủy đơn hàng từ khách cần Admin xem xét.</span><a class="button" href="'.admin_to('orders',['cancel'=>'pending']).'">Duyệt yêu cầu hủy →</a></div>';
     }
@@ -668,8 +672,13 @@ elseif ($page==='payments') {
 }
 elseif ($page==='orders') {
     admin_title('Quản lý đơn hàng','Tìm kiếm, lọc và cập nhật tiến độ xử lý đơn hàng.');
-    $pendingCancelCount=(int)(row("SELECT COUNT(*) AS n FROM tbl_order_cancel_requests WHERE status='PENDING'")['n']??0);
-    if ($pendingCancelCount>0) echo '<div class="alert info">📩 Có <strong>'.$pendingCancelCount.'</strong> yêu cầu hủy đang chờ duyệt. <a class="link-blue" href="'.admin_to('orders',['cancel'=>'pending']).'">Xem yêu cầu hủy →</a></div>';
+    $cancelSchemaMissing=false;
+    $pendingCancelCount=pending_cancel_requests_count($cancelSchemaMissing);
+    if ($cancelSchemaMissing) {
+        echo '<div class="alert danger">⚠️ Cơ sở dữ liệu chưa có bảng <code>tbl_order_cancel_requests</code>. Hãy sao lưu database rồi import <code>banhang.sql</code> trong phpMyAdmin để bật quản lý yêu cầu hủy đơn.</div>';
+    } elseif ($pendingCancelCount>0) {
+        echo '<div class="alert info">📩 Có <strong>'.$pendingCancelCount.'</strong> yêu cầu hủy đang chờ duyệt. <a class="link-blue" href="'.admin_to('orders',['cancel'=>'pending']).'">Xem yêu cầu hủy →</a></div>';
+    }
     $status=(string)($_GET['status']??'');
     $method=(string)($_GET['method']??'');
     $q=trim((string)($_GET['q']??''));
@@ -679,7 +688,10 @@ elseif ($page==='orders') {
     $perPage=20;$offset=($curPage-1)*$perPage;
     $where=[];$params=[];
     $cancelFilter=(string)($_GET['cancel']??'');
-    if ($cancelFilter==='pending') $where[]="EXISTS (SELECT 1 FROM tbl_order_cancel_requests cr WHERE cr.order_id=tbl_orders.id AND cr.status='PENDING')";
+    if ($cancelFilter==='pending') {
+        if ($cancelSchemaMissing) $where[]='1=0';
+        else $where[]="EXISTS (SELECT 1 FROM tbl_order_cancel_requests cr WHERE cr.order_id=tbl_orders.id AND cr.status='PENDING')";
+    }
     if (in_array($status,['PENDING','CONFIRMED','PREPARING','SHIPPING','COMPLETED','CANCELLED'],true)) {
         $where[]='order_status=?';$params[]=$status;
     } else $status='';
@@ -695,9 +707,9 @@ elseif ($page==='orders') {
     if (preg_match('/^\d{4}-\d{2}-\d{2}$/',$to)) { $where[]='created_at <= ?'; $params[]=$to.' 23:59:59'; } else $to='';
     $whereSql=$where?' WHERE '.implode(' AND ',$where):'';
     $totalRows=(int)(row('SELECT COUNT(*) AS n FROM tbl_orders'.$whereSql,$params)['n']??0);
-    $orders=rows("SELECT id,order_code,customer_name,phone,created_at,total_amount,payment_method,payment_status,payment_review_status,order_status,tracking_code,
-                         (SELECT COUNT(*) FROM tbl_order_cancel_requests cr WHERE cr.order_id=tbl_orders.id AND cr.status='PENDING') AS cancel_pending
-                   FROM tbl_orders".$whereSql.' ORDER BY id DESC LIMIT '.$perPage.' OFFSET '.$offset,$params);
+    $orders=rows("SELECT id,order_code,customer_name,phone,created_at,total_amount,payment_method,payment_status,payment_review_status,order_status,tracking_code
+                  FROM tbl_orders".$whereSql.' ORDER BY id DESC LIMIT '.$perPage.' OFFSET '.$offset,$params);
+    $pendingCancelMap=$cancelSchemaMissing ? [] : pending_cancel_request_order_ids(array_column($orders,'id'),$cancelSchemaMissing);
 
     echo '<div class="filter-tabs">';
     foreach ([''=>'Tất cả','PENDING'=>'Đã đặt hàng','CONFIRMED'=>'Đã xác nhận','PREPARING'=>'Đang chuẩn bị','SHIPPING'=>'Đang giao','COMPLETED'=>'Đã giao','CANCELLED'=>'Đã hủy'] as $k=>$label) {
@@ -714,7 +726,8 @@ elseif ($page==='orders') {
     admin_table_start(['Mã đơn','Khách hàng','Ngày đặt','Tổng tiền','Thanh toán','Trạng thái đơn','Vận đơn']);
     foreach ($orders as $o) {
         $payState=payment_state_summary($o);
-        echo '<tr><td><a class="link-blue" href="'.admin_to('order',['id'=>$o['id']]).'"><strong>'.h($o['order_code']).'</strong></a>'.((int)$o['cancel_pending']>0?'<br><span class="status-pill status-pill--warning">📩 Chờ duyệt hủy</span>':'').'</td>';
+        $hasPendingCancel=!empty($pendingCancelMap[(int)$o['id']]);
+        echo '<tr><td><a class="link-blue" href="'.admin_to('order',['id'=>$o['id']]).'"><strong>'.h($o['order_code']).'</strong></a>'.($hasPendingCancel?'<br><span class="status-pill status-pill--warning">📩 Chờ duyệt hủy</span>':'').'</td>';
         echo '<td>'.h($o['customer_name']).'<br><small>'.h($o['phone']).'</small></td>';
         echo '<td>'.h($o['created_at']).'</td>';
         echo '<td><strong>'.money((int)$o['total_amount']).'</strong></td>';
@@ -749,8 +762,12 @@ elseif ($page==='order') {
     if (!$order) throw new DomainException('Đơn hàng không tồn tại.');
     $payState=payment_state_summary($order);
     $curStatus=(string)$order['order_status'];
-    $cancelRequest=row('SELECT * FROM tbl_order_cancel_requests WHERE order_id=?',[$id]);
+    $cancelSchemaMissing=false;
+    $cancelRequest=find_order_cancel_request($id,$cancelSchemaMissing);
     admin_title('Đơn hàng '. $order['order_code'],'Quản lý đối soát thanh toán, tiến độ xử lý, vận đơn và lịch sử thay đổi.','<a class="button button--light" href="'.admin_to('orders').'">← Danh sách đơn</a>');
+    if ($cancelSchemaMissing) {
+        echo '<div class="alert danger">⚠️ Cơ sở dữ liệu chưa có bảng <code>tbl_order_cancel_requests</code>. Hãy sao lưu database rồi import <code>banhang.sql</code> trong phpMyAdmin để bật chức năng duyệt yêu cầu hủy.</div>';
+    }
 
     echo '<div class="admin-grid"><div class="surface"><h2>Thông tin đơn hàng</h2>';
     echo '<p>Khách hàng: <strong>'.h($order['customer_name']).'</strong> (<a class="link-blue" href="'.admin_to('customer',['id'=>(int)$order['user_id']]).'">Xem hồ sơ khách</a>)</p>';
@@ -819,12 +836,13 @@ elseif ($page==='order') {
         echo '</section>';
     }
 
+    $hasPendingCancel=$cancelRequest && $cancelRequest['status']==='PENDING';
     $transitions=order_status_transitions();
     $forwardNext=[];
     $canCancel=false;
     foreach ($transitions[$curStatus]??[] as $nextKey) {
         if ($nextKey==='CANCELLED') {
-            if ($order['payment_status']!=='PAID' && $order['payment_review_status']!=='REPORTED') $canCancel=true;
+            if (!$hasPendingCancel && $order['payment_status']!=='PAID' && $order['payment_review_status']!=='REPORTED') $canCancel=true;
             continue;
         }
         if ($order['payment_method']==='BANK' && $order['payment_status']!=='PAID') continue;
@@ -833,7 +851,9 @@ elseif ($page==='order') {
     if ($order['payment_method']==='BANK' && $order['payment_status']!=='PAID' && $curStatus==='PENDING') {
         echo '<p class="payment-alert">Đơn chuyển khoản BANK phải được đối soát và xác nhận <strong>PAID</strong> bên dưới trước khi xác nhận hoặc giao hàng.</p>';
     }
-    if ($forwardNext) {
+    if ($hasPendingCancel && $forwardNext) {
+        echo '<p class="hint">Đơn đang có yêu cầu hủy chờ duyệt — hãy chấp thuận hoặc từ chối yêu cầu ở trên trước khi chuyển trạng thái tiếp theo.</p>';
+    } elseif ($forwardNext) {
         echo '<div class="payment-admin-form"><h3>Cập nhật tiến độ đơn hàng</h3>';
         echo '<form method="post">'.csrf_field().'<input type="hidden" name="action" value="order_status"><input type="hidden" name="id" value="'.$id.'">';
         echo '<label class="field-group">Chuyển sang trạng thái tiếp theo<select class="field" name="status" required>';

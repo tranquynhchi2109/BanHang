@@ -452,5 +452,6 @@ UNION ALL SELECT 'tbl_order_payment_details',COUNT(*) FROM tbl_order_payment_det
 UNION ALL SELECT 'tbl_inventory_movements',COUNT(*) FROM tbl_inventory_movements
 UNION ALL SELECT 'tbl_notifications',COUNT(*) FROM tbl_notifications
 UNION ALL SELECT 'tbl_order_status_history',COUNT(*) FROM tbl_order_status_history
+UNION ALL SELECT 'tbl_order_cancel_requests',COUNT(*) FROM tbl_order_cancel_requests
 UNION ALL SELECT 'tbl_email_outbox',COUNT(*) FROM tbl_email_outbox;
 SELECT setting_key,setting_value FROM tbl_settings WHERE setting_key IN ('bank_id','bank_account');

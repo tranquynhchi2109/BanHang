@@ -433,7 +433,8 @@ function update_order_status(int $orderId, int $adminId, string $next, array $op
         if (!$order) throw new DomainException('Không tìm thấy đơn hàng.');
 
         $from = (string)$order['order_status'];
-        $pendingCancel = row("SELECT id,reason FROM tbl_order_cancel_requests WHERE order_id=? AND status='PENDING' FOR UPDATE",[$orderId]);
+        $cancelSchemaMissing = false;
+        $pendingCancel = find_order_cancel_request($orderId, $cancelSchemaMissing, true, true);
         if ($pendingCancel && $next!=='CANCELLED') {
             throw new DomainException('Khách đang yêu cầu hủy đơn. Admin cần duyệt hoặc từ chối yêu cầu trước khi tiếp tục xử lý.');
         }
@@ -566,8 +567,7 @@ function update_order_status(int $orderId, int $adminId, string $next, array $op
         );
 
         if ($next==='CANCELLED' && $pendingCancel) {
-            run("UPDATE tbl_order_cancel_requests SET status='APPROVED',admin_note=?,resolved_at=NOW(),resolved_by=? WHERE id=?",
-                ['Đã duyệt hủy đơn, hoàn lại tồn kho.',$adminId,$pendingCancel['id']]);
+            approve_pending_cancel_request_if_present($orderId, $adminId, 'Đã duyệt hủy đơn, hoàn lại tồn kho.');
         }
         $updatedOrder = row('SELECT * FROM tbl_orders WHERE id=?', [$orderId]);
         queue_order_email($updatedOrder, $mailEvent, $publicNote, "email_status:{$orderId}:{$next}");
@@ -902,6 +902,110 @@ function revenue_report_data(string $range = '30d'): array
 }
 
 
+function is_missing_table_error(Throwable $e): bool
+{
+    return $e instanceof PDOException && (string)$e->getCode() === '42S02';
+}
+
+function log_missing_cancel_requests_table(Throwable $e): void
+{
+    static $logged = false;
+    if ($logged) return;
+    $logged = true;
+    error_log('[BanHang schema] Missing table tbl_order_cancel_requests (back up DB and import banhang.sql): ' . $e->getMessage());
+}
+
+/**
+ * Safely fetch an order's cancellation request without crashing if tbl_order_cancel_requests
+ * has not yet been created by importing banhang.sql.
+ */
+function find_order_cancel_request(
+    int $orderId,
+    bool &$schemaMissing = false,
+    bool $onlyPending = false,
+    bool $forUpdate = false
+): ?array {
+    $schemaMissing = false;
+    if ($orderId < 1) return null;
+    $sql = 'SELECT id,order_id,user_id,reason,status,admin_note,created_at,resolved_at,resolved_by
+            FROM tbl_order_cancel_requests WHERE order_id=?'
+        . ($onlyPending ? " AND status='PENDING'" : '')
+        . ' LIMIT 1'
+        . ($forUpdate ? ' FOR UPDATE' : '');
+    try {
+        return row($sql, [$orderId]);
+    } catch (Throwable $e) {
+        if (is_missing_table_error($e)) {
+            $schemaMissing = true;
+            log_missing_cancel_requests_table($e);
+            return null;
+        }
+        throw $e;
+    }
+}
+
+function pending_cancel_requests_count(bool &$schemaMissing = false): int
+{
+    $schemaMissing = false;
+    try {
+        return (int)(row("SELECT COUNT(*) AS n FROM tbl_order_cancel_requests WHERE status='PENDING'")['n'] ?? 0);
+    } catch (Throwable $e) {
+        if (is_missing_table_error($e)) {
+            $schemaMissing = true;
+            log_missing_cancel_requests_table($e);
+            return 0;
+        }
+        throw $e;
+    }
+}
+
+/**
+ * @param int[] $orderIds
+ * @return array<int,bool> map of order_id => true for orders with a PENDING cancel request
+ */
+function pending_cancel_request_order_ids(array $orderIds, bool &$schemaMissing = false): array
+{
+    $schemaMissing = false;
+    $ids = array_values(array_unique(array_filter(array_map('intval', $orderIds), static fn(int $v): bool => $v > 0)));
+    if (!$ids) return [];
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    try {
+        $list = rows(
+            "SELECT order_id FROM tbl_order_cancel_requests WHERE status='PENDING' AND order_id IN ({$placeholders})",
+            $ids
+        );
+        $map = [];
+        foreach ($list as $item) {
+            $map[(int)$item['order_id']] = true;
+        }
+        return $map;
+    } catch (Throwable $e) {
+        if (is_missing_table_error($e)) {
+            $schemaMissing = true;
+            log_missing_cancel_requests_table($e);
+            return [];
+        }
+        throw $e;
+    }
+}
+
+function approve_pending_cancel_request_if_present(int $orderId, int $adminId, string $adminNote): void
+{
+    try {
+        run(
+            "UPDATE tbl_order_cancel_requests SET status='APPROVED',admin_note=?,resolved_at=NOW(),resolved_by=?
+             WHERE order_id=? AND status='PENDING'",
+            [mb_substr(trim($adminNote), 0, 300), $adminId, $orderId]
+        );
+    } catch (Throwable $e) {
+        if (is_missing_table_error($e)) {
+            log_missing_cancel_requests_table($e);
+            return;
+        }
+        throw $e;
+    }
+}
+
 /**
  * Decide whether the current customer can cancel immediately or must ask Admin.
  * This is presentation-only; every write rechecks the locked DB row.
@@ -980,16 +1084,24 @@ function customer_cancel_order(string $code, int $customerId, string $reason, bo
         }
 
         if (!$options['can_request_cancel']) throw new DomainException('Đơn hàng không còn đủ điều kiện yêu cầu hủy.');
-        $request = row('SELECT id,status FROM tbl_order_cancel_requests WHERE order_id=?', [$orderId]);
-        if ($request) {
-            if ($request['status'] === 'PENDING') {
-                db()->commit();
-                return 'REQUESTED';
+        try {
+            $request = row('SELECT id,status FROM tbl_order_cancel_requests WHERE order_id=? FOR UPDATE', [$orderId]);
+            if ($request) {
+                if ($request['status'] === 'PENDING') {
+                    db()->commit();
+                    return 'REQUESTED';
+                }
+                throw new DomainException('Yêu cầu hủy trước đó đã được xử lý. Vui lòng liên hệ cửa hàng nếu cần hỗ trợ thêm.');
             }
-            throw new DomainException('Yêu cầu hủy trước đó đã được xử lý. Vui lòng liên hệ cửa hàng nếu cần hỗ trợ thêm.');
+            run('INSERT INTO tbl_order_cancel_requests(order_id,user_id,reason) VALUES (?,?,?)',
+                [$orderId,$customerId,$reason]);
+        } catch (Throwable $e) {
+            if (is_missing_table_error($e)) {
+                log_missing_cancel_requests_table($e);
+                throw new DomainException('Chức năng gửi yêu cầu hủy đơn đang tạm bảo trì. Vui lòng liên hệ cửa hàng để được hỗ trợ.');
+            }
+            throw $e;
         }
-        run('INSERT INTO tbl_order_cancel_requests(order_id,user_id,reason) VALUES (?,?,?)',
-            [$orderId,$customerId,$reason]);
         record_order_history($orderId,null,'CANCEL_REQUESTED','CUSTOMER',$customerId,
             'Khách hàng yêu cầu hủy (chờ Admin duyệt): '.$reason,true);
         create_notification($customerId,$orderId,'ORDER_CANCEL_REQUESTED','Đã gửi yêu cầu hủy đơn',
@@ -1021,7 +1133,8 @@ function customer_change_payment_method(string $code, int $customerId, string $m
             throw new DomainException('Đơn đã xử lý hoặc đã báo/chuyển tiền; không thể tự đổi phương thức thanh toán.');
         }
         $orderId = (int)$order['id'];
-        if (row("SELECT id FROM tbl_order_cancel_requests WHERE order_id=? AND status='PENDING'", [$orderId])) {
+        $cancelSchemaMissing = false;
+        if (find_order_cancel_request($orderId, $cancelSchemaMissing, true, true)) {
             throw new DomainException('Đơn đang có yêu cầu hủy chờ duyệt, không thể đổi thanh toán.');
         }
         if ($order['payment_method'] === $method) {
@@ -1061,7 +1174,11 @@ function admin_decline_cancel_request(int $orderId, int $adminId, string $note):
     try {
         $order = row('SELECT * FROM tbl_orders WHERE id=? FOR UPDATE',[$orderId]);
         if (!$order) throw new DomainException('Không tìm thấy đơn hàng.');
-        $request = row("SELECT * FROM tbl_order_cancel_requests WHERE order_id=? AND status='PENDING' FOR UPDATE",[$orderId]);
+        $cancelSchemaMissing = false;
+        $request = find_order_cancel_request($orderId, $cancelSchemaMissing, true, true);
+        if ($cancelSchemaMissing) {
+            throw new DomainException('Cơ sở dữ liệu chưa có bảng yêu cầu hủy (tbl_order_cancel_requests). Hãy sao lưu DB và import banhang.sql.');
+        }
         if (!$request) throw new DomainException('Không còn yêu cầu hủy đang chờ duyệt.');
         run("UPDATE tbl_order_cancel_requests SET status='DECLINED',admin_note=?,resolved_at=NOW(),resolved_by=? WHERE id=?",
             [$note,$adminId,$request['id']]);

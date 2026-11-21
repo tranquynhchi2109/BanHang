@@ -565,7 +565,8 @@ function report_bank_transfer(string $code, int $customerId, string $note): void
         if ($order['payment_method']!=='BANK' || $order['payment_status']!=='UNPAID'
             || $order['order_status']==='CANCELLED') throw new DomainException('Đơn hàng không còn chờ chuyển khoản.');
         if ($order['payment_review_status']==='REPORTED') throw new DomainException('Đơn hàng đã được báo chuyển khoản, cửa hàng đang đối soát.');
-        if (row("SELECT id FROM tbl_order_cancel_requests WHERE order_id=? AND status='PENDING'",[(int)$order['id']])) {
+        $cancelSchemaMissing = false;
+        if (find_order_cancel_request((int)$order['id'], $cancelSchemaMissing, true, true)) {
             throw new DomainException('Đơn đang chờ duyệt yêu cầu hủy. Vui lòng không thực hiện thêm giao dịch và liên hệ cửa hàng nếu đã chuyển tiền.');
         }
         if ($order['payment_review_status']==='VERIFIED') throw new DomainException('Đơn hàng đã được xác nhận thanh toán.');
@@ -715,8 +716,7 @@ function expire_unpaid_bank_order(int $orderId, int $adminId): void
         }
         $reason = 'Đơn hàng chuyển khoản chưa thanh toán quá 24 giờ và đã được hủy thủ công.';
         run("UPDATE tbl_orders SET order_status='CANCELLED', cancel_reason=? WHERE id=?",[$reason, $orderId]);
-        run("UPDATE tbl_order_cancel_requests SET status='APPROVED',admin_note=?,resolved_at=NOW(),resolved_by=? WHERE order_id=? AND status='PENDING'",
-            ['Đơn quá hạn thanh toán đã được hủy thủ công và hoàn kho.',$adminId,$orderId]);
+        approve_pending_cancel_request_if_present($orderId, $adminId, 'Đơn quá hạn thanh toán đã được hủy thủ công và hoàn kho.');
         payment_event($orderId,'ADMIN_EXPIRED','ADMIN',$adminId,
             'Hủy thủ công đơn chưa thanh toán quá 24 giờ; đã hoàn tồn kho.');
         record_order_history($orderId, 'PENDING', 'CANCELLED', 'ADMIN', $adminId, $reason, true);

@@ -154,9 +154,25 @@ try {
                 redirect_to(link_to('order',['code'=>$code]));
             case 'checkout':
                 $user=require_customer();
+                $checkoutToken=trim((string)($_POST['checkout_token']??''));
+                $completedTokens=$_SESSION['completed_checkout_tokens']??[];
+                if ($checkoutToken!=='' && is_array($completedTokens) && isset($completedTokens[$checkoutToken])) {
+                    $existingCode=(string)$completedTokens[$checkoutToken];
+                    $existingOrder=row('SELECT order_code FROM tbl_orders WHERE order_code=? AND user_id=? LIMIT 1',[$existingCode,(int)$user['id_dangky']]);
+                    if ($existingOrder) {
+                        notice('Đơn hàng này đã được ghi nhận trước đó (tránh tạo trùng đơn).','info');
+                        redirect_to(link_to('order',['code'=>$existingOrder['order_code']]));
+                    }
+                }
                 $cart=$_SESSION['cart']??[];
                 $createdOrder=create_order_from_cart($user,$cart,$_POST);
-                unset($_SESSION['cart']);
+                unset($_SESSION['cart'],$_SESSION['checkout_token']);
+                if ($checkoutToken!=='') {
+                    if (!is_array($completedTokens)) $completedTokens=[];
+                    $completedTokens[$checkoutToken]=(string)$createdOrder['order_code'];
+                    if (count($completedTokens)>10) $completedTokens=array_slice($completedTokens,-10,null,true);
+                    $_SESSION['completed_checkout_tokens']=$completedTokens;
+                }
                 notice('Đơn hàng đã được ghi nhận.','success');
                 redirect_to(link_to('order',['code'=>$createdOrder['order_code']]));
             default:
@@ -189,8 +205,8 @@ try {
     echo '<title>' . h($title) . ' | BanHang</title><link rel="stylesheet" href="' . h(asset_url('css/style.css')) . '"></head><body>';
     echo '<main class="container section"><div class="surface" style="max-width:690px;margin:70px auto">';
     echo '<h1>' . h($title) . '</h1><p>' . h($explanation) . '</p>';
-    echo '<p>Giỏ hàng vẫn được giữ trong phiên hiện tại nếu đặt hàng chưa hoàn tất.</p>';
-    echo '<a class="button" href="' . h(link_to('checkout')) . '">Quay lại thanh toán</a></div></main></body></html>';
+    echo '<p>Nếu bạn vừa bấm đặt hàng, vui lòng kiểm tra mục <strong>Đơn hàng của tôi</strong> trước khi đặt lại để tránh tạo trùng đơn. Giỏ hàng vẫn được giữ nếu đơn hàng chưa được tạo.</p>';
+    echo '<div style="display:flex;gap:10px;flex-wrap:wrap"><a class="button" href="' . h(link_to('orders')) . '">Kiểm tra đơn hàng của tôi</a><a class="button button--light" href="' . h(link_to('cart')) . '">Quay lại giỏ hàng</a></div></div></main></body></html>';
     exit;
 }
 
