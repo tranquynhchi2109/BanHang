@@ -103,44 +103,40 @@ try {
     $mvCount = (int)row("SELECT COUNT(*) AS n FROM tbl_inventory_movements WHERE product_id=? AND movement_type='ADJUSTMENT'", [$createdProductId])['n'];
     assert_hard($mvCount === 1, '1f. Inventory movement ledger recorded adjustment');
 
-    // 1c. Two independent DB connections contending on the same product row (stock = 3)
+    // 1c. Two independent DB connections exercise the exact lock/deduction functions used by checkout.
     $conn1 = open_fresh_pdo();
     $conn2 = open_fresh_pdo();
     $conn1->exec('SET innodb_lock_wait_timeout = 3');
     $conn2->exec('SET innodb_lock_wait_timeout = 1');
 
     $conn1->beginTransaction();
-    $stmt1 = $conn1->prepare('SELECT soluong FROM tbl_sanpham WHERE id_sanpham=? FOR UPDATE');
-    $stmt1->execute([$createdProductId]);
-    $lockedStock1 = (int)$stmt1->fetchColumn();
-    assert_hard($lockedStock1 === 3, '1g. Conn1 acquires FOR UPDATE lock on stock=3');
+    $lockedProducts1 = lock_checkout_products($conn1, [$createdProductId => 2]);
+    assert_hard((int)$lockedProducts1[$createdProductId]['soluong'] === 3, '1g. Checkout service locks product row at stock=3');
 
-    // Conn2 MUST block/timeout while Conn1 holds the InnoDB row lock (proves real row locking!)
     $conn2->beginTransaction();
     $lockBlocked = false;
     try {
-        $stmt2 = $conn2->prepare('SELECT soluong FROM tbl_sanpham WHERE id_sanpham=? FOR UPDATE');
-        $stmt2->execute([$createdProductId]);
+        lock_checkout_products($conn2, [$createdProductId => 2]);
     } catch (PDOException $e) {
         $lockBlocked = true;
     } finally {
         if ($conn2->inTransaction()) $conn2->rollBack();
     }
-    assert_hard($lockBlocked, '1h. Conn2 blocked by InnoDB FOR UPDATE lock while Conn1 is checking out');
+    assert_hard($lockBlocked, '1h. Concurrent checkout service call blocks on the InnoDB row lock');
 
-    // Conn1 completes buying 2 units (stock 3 -> 1) and commits
-    $upd1 = $conn1->prepare('UPDATE tbl_sanpham SET soluong = soluong - 2 WHERE id_sanpham=? AND soluong >= 2');
-    $upd1->execute([$createdProductId]);
+    deduct_checkout_stock($conn1, [$createdProductId => 2], $lockedProducts1, null, 1, "HD{$runId}CONCURRENT");
     $conn1->commit();
 
-    // Now Conn2 retries buying 2 units -> sees stock=1 -> MUST refuse (no overselling!)
     $conn2->beginTransaction();
-    $stmt2b = $conn2->prepare('SELECT soluong FROM tbl_sanpham WHERE id_sanpham=? FOR UPDATE');
-    $stmt2b->execute([$createdProductId]);
-    $lockedStock2 = (int)$stmt2b->fetchColumn();
-    $oversellBlocked = ($lockedStock2 < 2);
-    $conn2->rollBack();
-    assert_hard($oversellBlocked && $lockedStock2 === 1, '1i. Conn2 sees updated stock=1 after Conn1 commit and cannot oversell 2 units');
+    $oversellBlocked = false;
+    try {
+        lock_checkout_products($conn2, [$createdProductId => 2]);
+    } catch (DomainException $e) {
+        $oversellBlocked = true;
+    } finally {
+        if ($conn2->inTransaction()) $conn2->rollBack();
+    }
+    assert_hard($oversellBlocked && (int)row('SELECT soluong FROM tbl_sanpham WHERE id_sanpham=?', [$createdProductId])['soluong'] === 1, '1i. Checkout service refuses the second purchase after stock falls to 1');
     $conn1 = null;
     $conn2 = null;
 
@@ -179,12 +175,16 @@ try {
     assert_hard($qrX !== null && str_contains($qrX, '970422-1111222233') && str_contains($qrX, '25000000') && str_contains($qrX, rawurlencode("BANHANG {$codeX}")), '2a. Order A retains original Bank X snapshot after settings changed to Bank Y');
     assert_hard($qrY !== null && str_contains($qrY, '970415-9999888877') && str_contains($qrY, '27000000') && str_contains($qrY, rawurlencode("BANHANG {$codeY}")), '2b. Order B uses new Bank Y snapshot');
 
+    run("UPDATE tbl_settings SET setting_value='' WHERE setting_key IN ('bank_id','bank_account')");
+    assert_hard(setting('bank_id') === '' && setting('bank_account') === '', '2c. Clearing both bank settings disables BANK checkout without hidden fallback');
+    run("UPDATE tbl_settings SET setting_value=CASE setting_key WHEN 'bank_id' THEN '970415' WHEN 'bank_account' THEN '9999888877' END WHERE setting_key IN ('bank_id','bank_account')");
+
     // Legacy order without snapshot MUST NOT silently inherit Bank Y
     $codeLeg = "HD{$runId}L";
     run("INSERT INTO tbl_orders(order_code,user_id,customer_name,phone,delivery_address,total_amount,payment_method) VALUES (?,?,?,'0901000001','123 Test St',19000000,'BANK')", [$codeLeg, $userA, "User A {$runId}"]);
     $ordLeg = (int)db()->lastInsertId();
     $createdOrders[] = $ordLeg;
-    assert_hard(order_payment_snapshot($ordLeg) === null && qr_link(row('SELECT * FROM tbl_orders WHERE id=?', [$ordLeg])) === null, '2c. Legacy BANK order without snapshot returns null (never silently adopts current bank settings)');
+    assert_hard(order_payment_snapshot($ordLeg) === null && qr_link(row('SELECT * FROM tbl_orders WHERE id=?', [$ordLeg])) === null, '2d. Legacy BANK order without snapshot returns null (never silently adopts current bank settings)');
 
     // =========================================================================
     // 3. P1: DECOUPLED EMAIL OUTBOX & CLI WORKER
@@ -224,13 +224,19 @@ try {
     dispatch_email_outbox(10, $okSender);
     assert_hard($sentHits === 1 && row('SELECT status,sent_at FROM tbl_email_outbox WHERE id=?', [$obW])['status'] === 'SENT', '3d. Retry delivers once and SENT email is never re-sent');
 
-    // Execute real CLI worker script and verify clean JSON + exit 0
+    // Exercise the CLI entry point in dry-run mode; it must not claim or send mail.
     $workerPath = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'scripts' . DIRECTORY_SEPARATOR . 'email_worker.php';
+    $queuedStatusBeforeDryRun = (string)$queuedPaid['status'];
     $cmdOut = [];
     $cmdExit = 0;
-    exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($workerPath) . ' --limit=5', $cmdOut, $cmdExit);
+    exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($workerPath) . ' --dry-run', $cmdOut, $cmdExit);
     $workerJson = json_decode(implode("\n", $cmdOut), true);
-    assert_hard($cmdExit === 0 && is_array($workerJson) && array_key_exists('sent', $workerJson), '3e. CLI scripts/email_worker.php executes cleanly and outputs JSON stats');
+    $queuedStatusAfterDryRun = (string)row('SELECT status FROM tbl_email_outbox WHERE id=?', [(int)$queuedPaid['id']])['status'];
+    assert_hard(
+        $cmdExit === 0 && is_array($workerJson) && ($workerJson['dry_run'] ?? false) === true
+            && (int)($workerJson['sent'] ?? -1) === 0 && $queuedStatusAfterDryRun === $queuedStatusBeforeDryRun,
+        '3e. CLI worker dry-run reports queue state without sending or mutating email'
+    );
 
     // =========================================================================
     // 4. P2: NOTIFICATION IDEMPOTENCY (A -> B -> A, A -> A, RETRY, CLEAR)

@@ -1,12 +1,10 @@
--- BANHANG.SQL: THE ONLY SQL FILE NEEDED FOR EXISTING INSTALLS OR NEW EMPTY DB.
--- BACK UP the real web_mysqli database before import.
--- Does NOT erase, replace or re-import customer, product, category or old order rows.
--- For existing old v2_* tables: renames them to tbl_* if no name collisions.
--- If an old and a new table coexist, the preflight fails: do not drop either.
+-- BANHANG.SQL: import into the target database selected in phpMyAdmin.
+-- CLI example: mysql -D web_mysqli < banhang.sql
+-- Back up the target database before import. This script never switches schemas.
+-- Does NOT erase customer, product, category or old order rows.
+-- Old v2_* tables are renamed only when no name collisions exist.
 -- No dummy products, prices, accounts, credentials or private customer data.
 SET NAMES utf8mb4;
-CREATE DATABASE IF NOT EXISTS `web_mysqli` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE `web_mysqli`;
 
 SET @banhang_conflict = ((SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='v2_orders') > 0 AND (SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders') > 0) + ((SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='v2_order_items') > 0 AND (SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_order_items') > 0) + ((SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='v2_settings') > 0 AND (SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_settings') > 0) + ((SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='v2_login_attempts') > 0 AND (SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_login_attempts') > 0);
 SET @banhang_guard = IF(@banhang_conflict > 0,'SELECT * FROM `BANHANG_STOP_DUAL_TABLES_BACKUP_AND_RECONCILE`','SELECT 1 AS safe_to_migrate');
@@ -177,9 +175,9 @@ WHERE LOWER(c.tendanhmuc) LIKE '%điện thoại%' AND p.giasp>0;
 
 INSERT IGNORE INTO tbl_settings(setting_key,setting_value) VALUES
  ('store_name','BanHang Tech Store'),('support_email',''),('bank_name','');
-INSERT INTO tbl_settings(setting_key,setting_value)
-VALUES ('bank_id','970422'),('bank_account','0973258529')
-ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value);
+-- Seed defaults only when a key is absent; never overwrite Admin bank settings on re-import.
+INSERT IGNORE INTO tbl_settings(setting_key,setting_value)
+VALUES ('bank_id','970422'),('bank_account','0973258529');
 
 
 -- Manually reconciled VietQR payments. Idempotent MariaDB 10.4+/MySQL 8 updates.

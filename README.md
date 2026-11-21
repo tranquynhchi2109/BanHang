@@ -3,9 +3,11 @@
 ## Một file SQL duy nhất: `banhang.sql`
 
 File **`banhang.sql`** là file SQL duy nhất trong repository để tạo/nâng cấp
-cấu trúc. Nó tự đổi bốn bảng `v2_*` thành `tbl_*` nếu an toàn,
-bổ sung `tbl_order_items.variant_label`, `tbl_product_variants`,
-thiết lập MB Bank và giữ nguyên bảng/dữ liệu cũ.
+cấu trúc. Hãy chọn đúng database đích trong phpMyAdmin trước khi import (hoặc dùng
+`mysql -D web_mysqli < banhang.sql`). SQL không tự chuyển schema sang `web_mysqli`,
+nên có thể dùng database kiểm thử riêng. Nó tự đổi bốn bảng `v2_*` thành `tbl_*`
+nếu an toàn, bổ sung các cột/bảng mới và giữ nguyên dữ liệu cũ. Tài khoản MB Bank
+mặc định chỉ được seed khi key chưa tồn tại; import lại không ghi đè cấu hình Admin.
 
 **Trên máy XAMPP đã có database `web_mysqli`:**
 
@@ -44,9 +46,26 @@ Source chưa kiểm thử đầy đủ trên XAMPP của mày, chưa có chứng
 Hãy thay mật khẩu demo, dùng HTTPS, MySQL user quyền tối thiểu, cập nhật PHP, sao lưu định kỳ.
 
 ## Kiểm thử tự động
-GitHub Actions: PHP lint, tạo database chỉ bằng `banhang.sql`, chạy lại nhiều lần,
-kiểm thử bảo toàn đơn khi đổi tên bảng, kiểm tra giá dung lượng từ SQL
-và không có mức phụ thu ẩn trong PHP.
+GitHub Actions chạy cùng bộ kiểm thử trên MySQL 8.0 và MariaDB 10.11: PHP lint,
+import lại SQL nhiều lần, bảo toàn cấu hình ngân hàng/giá Admin, kiểm tra checkout
+khóa kho, đối soát thanh toán, thông báo, SMTP outbox và nâng cấp bảng cũ.
+
+**An toàn khi chạy test local:** các file trong `tests/` tạo/xóa dữ liệu fixture.
+Chúng chỉ chạy bằng CLI khi có `BANHANG_TEST_MODE=1` và `DB_NAME` là database riêng
+có hậu tố `_test`, `_testing` hoặc `_ci`; nếu không, `app.php` sẽ từ chối chạy.
+Tạo database `web_mysqli_test`, import `banhang.sql` vào đúng database đó, rồi chạy
+PowerShell (điều chỉnh host/user/password theo máy):
+```powershell
+$env:BANHANG_TEST_MODE = "1"
+$env:DB_HOST = "127.0.0.1"
+$env:DB_NAME = "web_mysqli_test"
+$env:DB_USER = "root"
+$env:DB_PASS = ""
+C:\xampp\php\php.exe tests\manual_payment.php
+C:\xampp\php\php.exe tests\order_notifications.php
+C:\xampp\php\php.exe tests\critical_hardening.php
+```
+**Không chạy integration tests trên database `web_mysqli` đang phục vụ khách thật.**
 
 ## Đồng bộ dữ liệu FE → MySQL
 - Dữ liệu sản phẩm thật (Samsung S24 Ultra, Sony WH-1000XM5, Anker...) vốn đã nằm trong `tbl_sanpham` của bản export người dùng gửi.
@@ -79,7 +98,7 @@ và không có mức phụ thu ẩn trong PHP.
 - **Cập nhật gần thời gian thực (`api.php`):** Polling nhẹ mỗi 20 giây cho thông báo khách hàng, trạng thái đơn hàng đang xem và số đơn chờ đối soát trên Admin. Tự động tạm dừng khi tab ẩn (`visibilitychange`) và giới hạn tần suất theo phiên.
 - **Timeline & lịch sử đơn hàng (`tbl_order_status_history`):** Hỗ trợ đầy đủ `Đã đặt hàng` → `Đã xác nhận` → `Đang chuẩn bị hàng` → `Đang giao hàng` → `Đã giao thành công` (và `Đã hủy` kèm lý do). Chỉ đánh dấu các bước thực sự đã xảy ra. Hỗ trợ lưu đơn vị vận chuyển, mã vận đơn thực tế, ghi chú nội bộ Admin và ghi chú gửi khách.
 - **Phân tách doanh thu & COD:** Doanh thu thực nhận chỉ tính các đơn có `payment_status = 'PAID'` (đã đối soát BANK hoặc đã xác nhận thu tiền COD); không bao giờ tính đơn BANK `UNPAID` thành tiền đã nhận. Đơn COD có nút xác nhận thu tiền riêng khi đang giao/đã giao.
-- **Email SMTP tùy chọn (`mailer.php`, `tbl_email_outbox`):** Cấu hình qua biến môi trường hoặc `admin/config/config.local.php` (xem mẫu `admin/config/config.local.example.php`). Dùng hàng đợi outbox gửi ngoài transaction DB; nếu chưa cấu hình SMTP, website và thông báo trên web vẫn hoạt động bình thường và không báo sai là đã gửi email.
+- **Email SMTP tùy chọn (`mailer.php`, `tbl_email_outbox`):** Cấu hình qua biến môi trường hoặc `admin/config/config.local.php` (xem mẫu `admin/config/config.local.example.php`). Dùng hàng đợi outbox gửi ngoài transaction DB; nếu chưa cấu hình SMTP, website và thông báo trên web vẫn hoạt động bình thường. Email `SKIPPED` không tự gửi lại; Admin phải cấu hình SMTP hợp lệ rồi xác nhận riêng thao tác gửi lại email lịch sử. Worker hỗ trợ `--dry-run` để kiểm tra hàng đợi mà không claim/gửi email.
 
 ## Hướng dẫn cập nhật XAMPP không mất dữ liệu & Rollback
 

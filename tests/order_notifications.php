@@ -246,6 +246,10 @@ try {
     $ids2 = array_column($batch2, 'id');
     assert_ok(in_array($pendId, $ids1, true) && !in_array($pendId, $ids2, true), '14e. Atomic claim prevents concurrent workers claiming same email');
     assert_ok(!in_array($skipId, $ids1, true) && !in_array($skipId, $ids2, true), '14f. SKIPPED historical emails are never auto-claimed');
+    assert_throws_domain(fn() => requeue_skipped_outbox_emails(false), '14f2. SKIPPED requeue refuses when SMTP is not configured');
+    assert_ok(row('SELECT status FROM tbl_email_outbox WHERE id=?', [$skipId])['status'] === 'SKIPPED', '14f3. Rejected SKIPPED retry leaves historical row unchanged');
+    $skippedRequeued = requeue_skipped_outbox_emails(true);
+    assert_ok($skippedRequeued >= 1 && row('SELECT status FROM tbl_email_outbox WHERE id=?', [$skipId])['status'] === 'PENDING', '14f4. Admin-approved SKIPPED retry returns eligible mail to PENDING');
 
     // Stale PROCESSING recovery (> 5 min)
     run('UPDATE tbl_email_outbox SET claimed_at = NOW() - INTERVAL 10 MINUTE WHERE id=?', [$pendId]);
@@ -261,7 +265,7 @@ try {
     $disp2 = dispatch_email_outbox(20, $mockSender);
     assert_ok(in_array($pendId, $deliveredIds, true) && row('SELECT status, sent_at FROM tbl_email_outbox WHERE id=?', [$pendId])['status'] === 'SENT', '14h. Outbox dispatches PENDING -> SENT cleanly');
     assert_ok(count(array_filter($deliveredIds, static fn($x) => $x === $pendId)) === 1 && $disp2['sent'] === 0, '14i. SENT email is never re-sent on subsequent dispatch');
-    assert_ok(row('SELECT status FROM tbl_email_outbox WHERE id=?', [$skipId])['status'] === 'SKIPPED', '14j. Historical SKIPPED email stayed SKIPPED (no unintended flood)');
+    assert_ok(in_array($skipId, $deliveredIds, true) && row('SELECT status FROM tbl_email_outbox WHERE id=?', [$skipId])['status'] === 'SENT', '14j. Only the explicitly re-queued SKIPPED email is delivered by the mock sender');
 
     echo "All order, notification, timeline, COD, SMTP and outbox integration checks PASSED\n";
 } finally {

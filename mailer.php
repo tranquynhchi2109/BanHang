@@ -499,6 +499,23 @@ function requeue_failed_outbox_emails(): array
 }
 
 /**
+ * Explicitly re-queue historical SKIPPED mail only after Admin confirms SMTP is valid.
+ * Workers never auto-retry SKIPPED rows.
+ */
+function requeue_skipped_outbox_emails(bool $smtpConfigured): int
+{
+    if (!$smtpConfigured) {
+        throw new DomainException('SMTP chưa cấu hình hợp lệ. Không thể gửi lại email SKIPPED.');
+    }
+    $maxAttempts = EMAIL_OUTBOX_MAX_ATTEMPTS;
+    return run(
+        "UPDATE tbl_email_outbox
+         SET status='PENDING', last_error='', claim_token=NULL, claimed_at=NULL, next_retry_at=NOW()
+         WHERE status='SKIPPED' AND attempts < {$maxAttempts}"
+    );
+}
+
+/**
  * Process email outbox outside any DB transaction (for CLI worker & tests).
  * Optional $sender callable allows deterministic unit/integration testing without external SMTP.
  * Historical SKIPPED rows are NOT auto-dispatched when SMTP is later enabled.

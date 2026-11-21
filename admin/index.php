@@ -210,12 +210,15 @@ try {
                 notice('Đã gửi thông báo tới khách hàng.','success');
                 redirect_to(admin_to('customer',['id'=>$customerId]));
             case 'retry_email_outbox':
-                $rq=requeue_failed_outbox_emails();
                 if (!smtp_is_configured(true)) {
-                    notice('SMTP chưa cấu hình hợp lệ nên worker chưa thể gửi mail. Các thông báo trên website vẫn hoạt động bình thường.','info');
-                } else {
-                    notice("Đã đưa {$rq['requeued']} email thất bại vào hàng đợi và khôi phục {$rq['recovered']} job treo. Worker CLI (scripts/email_worker.php) sẽ gửi nền không làm chậm Admin.",'success');
+                    throw new DomainException('SMTP chưa cấu hình hợp lệ. Không đưa email trở lại hàng đợi để tránh tiếp tục chuyển chúng thành SKIPPED.');
                 }
+                $rq=requeue_failed_outbox_emails();
+                notice("Đã đưa {$rq['requeued']} email FAILED vào hàng đợi và khôi phục {$rq['recovered']} job treo. Worker CLI sẽ gửi nền.",'success');
+                redirect_to(admin_to('settings'));
+            case 'retry_skipped_email_outbox':
+                $requeuedSkipped=requeue_skipped_outbox_emails(smtp_is_configured(true));
+                notice("Đã đưa {$requeuedSkipped} email SKIPPED trở lại hàng đợi theo xác nhận thủ công. Worker CLI sẽ gửi nền.",'success');
                 redirect_to(admin_to('settings'));
             case 'save_settings':
                 $values=[
@@ -230,12 +233,22 @@ try {
                     ($values['support_email']!=='' && !filter_var($values['support_email'],FILTER_VALIDATE_EMAIL)) ||
                     ($values['bank_id']!=='' && !preg_match('/^[A-Z0-9]{2,15}$/',$values['bank_id'])) ||
                     ($values['bank_account']!=='' && !preg_match('/^[0-9]{6,24}$/',$values['bank_account'])) ||
-                    mb_strlen($values['bank_name'])>150 || mb_strlen($values['contact_info'])>2000) throw new DomainException('Cấu hình ngân hàng hoặc cửa hàng không hợp lệ.');
-                foreach ($values as $key=>$value) {
-                    if ($key==='contact_info') continue;
-                    run('INSERT INTO tbl_settings(setting_key,setting_value) VALUES(?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)',[$key,$value]);
+                    (($values['bank_id']==='') !== ($values['bank_account']==='')) ||
+                    mb_strlen($values['bank_name'])>150 || mb_strlen($values['contact_info'])>2000) {
+                    throw new DomainException('Cấu hình ngân hàng hoặc cửa hàng không hợp lệ. Muốn tắt chuyển khoản, hãy xóa cả mã ngân hàng và số tài khoản.');
                 }
-                run('INSERT INTO tbl_lienhe(id,thongtinlienhe) VALUES (1,?) ON DUPLICATE KEY UPDATE thongtinlienhe=VALUES(thongtinlienhe)',[$values['contact_info']]);
+                db()->beginTransaction();
+                try {
+                    foreach ($values as $key=>$value) {
+                        if ($key==='contact_info') continue;
+                        run('INSERT INTO tbl_settings(setting_key,setting_value) VALUES(?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)',[$key,$value]);
+                    }
+                    run('INSERT INTO tbl_lienhe(id,thongtinlienhe) VALUES (1,?) ON DUPLICATE KEY UPDATE thongtinlienhe=VALUES(thongtinlienhe)',[$values['contact_info']]);
+                    db()->commit();
+                } catch (Throwable $e) {
+                    if (db()->inTransaction()) db()->rollBack();
+                    throw $e;
+                }
                 notice('Đã lưu cấu hình cửa hàng.','success');
                 redirect_to(admin_to('settings'));
             case 'save_article':
@@ -286,7 +299,7 @@ try {
         'login_admin'=>'login','save_product'=>'product_form','save_category'=>'categories',
         'order_status','save_order_notes','mark_paid','reject_bank_report','expire_unpaid','confirm_cod_paid'=>'orders',
         'legacy_order_seen'=>'legacy_orders','send_customer_notification'=>'customers',
-        'save_settings','retry_email_outbox'=>'settings','save_article'=>'article_form',
+        'save_settings','retry_email_outbox','retry_skipped_email_outbox'=>'settings','save_article'=>'article_form',
         default=>'dashboard'
     };
     redirect_to(admin_to($target));
@@ -1120,8 +1133,15 @@ elseif ($page==='settings') {
         echo '<p><span class="status-pill status-pill--warning">SMTP chưa sẵn sàng</span> · '.h($smtpErr).' Cấu hình qua biến môi trường hoặc <code>admin/config/config.local.php</code> (xem mẫu <code>config.local.example.php</code>). Website và trung tâm thông báo khách hàng vẫn hoạt động bình thường.</p>';
     }
     echo '<p>Thống kê hàng đợi: Đã gửi <strong>'.(int)($outboxCounts['sent_n']??0).'</strong> · Đang chờ <strong>'.(int)($outboxCounts['pending_n']??0).'</strong> · Đang xử lý <strong>'.(int)($outboxCounts['proc_n']??0).'</strong> · Thất bại <strong>'.(int)($outboxCounts['failed_n']??0).'</strong> · Bỏ qua <strong>'.(int)($outboxCounts['skipped_n']??0).'</strong></p>';
-    echo '<p class="hint">Lưu ý: Các email trạng thái SKIPPED từ thời điểm chưa cấu hình SMTP sẽ KHÔNG bị tự động gửi hàng loạt khi bật SMTP về sau.</p>';
-    echo '<form method="post" class="inline-form">'.csrf_field().'<input type="hidden" name="action" value="retry_email_outbox"><button type="submit" class="button button--light">Xử lý / thử gửi lại hàng đợi email</button></form>';
+    echo '<p class="hint">Email SKIPPED không tự gửi lại khi bật SMTP. Chỉ dùng nút gửi lại riêng sau khi đã kiểm tra cấu hình và chấp nhận gửi các email lịch sử.</p>';
+    if ($smtpErr===null) {
+        echo '<form method="post" class="inline-form">'.csrf_field().'<input type="hidden" name="action" value="retry_email_outbox"><button type="submit" class="button button--light">Khôi phục email FAILED / job treo</button></form>';
+        if ((int)($outboxCounts['skipped_n']??0)>0) {
+            echo '<form method="post" class="inline-form">'.csrf_field().'<input type="hidden" name="action" value="retry_skipped_email_outbox"><button type="submit" class="button button--light" data-confirm="Gửi lại tất cả email SKIPPED còn trong giới hạn thử? Hành động này có thể gửi email lịch sử tới khách hàng.">Gửi lại email SKIPPED đã chọn</button></form>';
+        }
+    } else {
+        echo '<p class="hint">Cần cấu hình SMTP hợp lệ trước khi khôi phục email FAILED hoặc gửi lại email SKIPPED.</p>';
+    }
     $recentMail=rows('SELECT id,recipient_email,event_type,subject,status,attempts,last_error,created_at,sent_at FROM tbl_email_outbox ORDER BY id DESC LIMIT 10');
     if ($recentMail) {
         admin_table_start(['Người nhận','Sự kiện','Tiêu đề','Trạng thái','Lần thử','Thời gian / Ghi chú']);

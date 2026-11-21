@@ -4,15 +4,33 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        database:
+          - name: MySQL 8.0
+            image: mysql:8.0
+          - name: MariaDB 10.11
+            image: mariadb:10.11
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_NAME: web_mysqli_test
+      DB_USER: root
+      DB_PASS: root
+      MYSQL_PWD: root
+      BANHANG_TEST_MODE: '1'
     services:
-      mysql:
-        image: mysql:8.0
+      database:
+        image: ${{ matrix.database.image }}
         env:
           MYSQL_ROOT_PASSWORD: root
-        ports: ["3306:3306"]
+          MARIADB_ROOT_PASSWORD: root
+        ports: ['3306:3306']
         options: >-
           --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
           --health-interval=10s
@@ -38,35 +56,32 @@ jobs:
           php -l tests/manual_payment.php
           php -l tests/order_notifications.php
           php -l tests/critical_hardening.php
-      - name: Create database with the single SQL, re-import idempotently
-        env:
-          MYSQL_PWD: root
+      - name: Create isolated test database and re-import SQL idempotently
         run: |
-          mysql -h127.0.0.1 -uroot < banhang.sql
-          mysql -h127.0.0.1 -uroot < banhang.sql
-          mysql -h127.0.0.1 -uroot web_mysqli -e "INSERT INTO tbl_danhmuc(id_danhmuc,tendanhmuc,thutu) VALUES (1,'Điện thoại',1);"
-          mysql -h127.0.0.1 -uroot web_mysqli -e "INSERT INTO tbl_sanpham(id_sanpham,tensanpham,masp,giasp,soluong,hinhanh,tomtat,noidung,tinhtrang,id_danhmuc) VALUES (1,'CI Phone','CI1',27500000,10,'ci.jpg','','',1,1);"
-          mysql -h127.0.0.1 -uroot < banhang.sql
-          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli -e "SELECT price FROM tbl_product_variants WHERE product_id=1 AND variant_code='128GB'")" = '27500000'
-          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli -e "SELECT price FROM tbl_product_variants WHERE product_id=1 AND variant_code='1TB'")" = '37500000'
-          mysql -h127.0.0.1 -uroot web_mysqli -e "UPDATE tbl_product_variants SET price=35900000 WHERE product_id=1 AND variant_code='1TB';"
-          mysql -h127.0.0.1 -uroot < banhang.sql
-          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli -e "SELECT price FROM tbl_product_variants WHERE product_id=1 AND variant_code='1TB'")" = '35900000'
-      - name: Check PHP uses database variant prices exactly
-        env:
-          DB_HOST: 127.0.0.1
-          DB_NAME: web_mysqli
-          DB_USER: root
-          DB_PASS: root
+          mysql -h127.0.0.1 -uroot -e "CREATE DATABASE IF NOT EXISTS web_mysqli_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          mysql -h127.0.0.1 -uroot web_mysqli_test < banhang.sql
+          mysql -h127.0.0.1 -uroot web_mysqli_test < banhang.sql
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_settings WHERE setting_key IN ('bank_id','bank_account')")" = '2'
+          mysql -h127.0.0.1 -uroot web_mysqli_test -e "UPDATE tbl_settings SET setting_value=CASE setting_key WHEN 'bank_id' THEN '970415' WHEN 'bank_account' THEN '1234567890' END WHERE setting_key IN ('bank_id','bank_account');"
+          mysql -h127.0.0.1 -uroot web_mysqli_test < banhang.sql
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT setting_value FROM tbl_settings WHERE setting_key='bank_id'")" = '970415'
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT setting_value FROM tbl_settings WHERE setting_key='bank_account'")" = '1234567890'
+          mysql -h127.0.0.1 -uroot web_mysqli_test -e "UPDATE tbl_settings SET setting_value='' WHERE setting_key IN ('bank_id','bank_account');"
+          php -r 'require "app.php"; if(setting("bank_id")!=="" || setting("bank_account")!=="") exit(1); echo "Blank bank settings disable BANK fallback\n";'
+          mysql -h127.0.0.1 -uroot web_mysqli_test -e "UPDATE tbl_settings SET setting_value=CASE setting_key WHEN 'bank_id' THEN '970415' WHEN 'bank_account' THEN '1234567890' END WHERE setting_key IN ('bank_id','bank_account');"
+          mysql -h127.0.0.1 -uroot web_mysqli_test -e "INSERT INTO tbl_danhmuc(id_danhmuc,tendanhmuc,thutu) VALUES (1,'Điện thoại',1);"
+          mysql -h127.0.0.1 -uroot web_mysqli_test -e "INSERT INTO tbl_sanpham(id_sanpham,tensanpham,masp,giasp,soluong,hinhanh,tomtat,noidung,tinhtrang,id_danhmuc) VALUES (1,'CI Phone','CI1',27500000,10,'ci.jpg','','',1,1);"
+          mysql -h127.0.0.1 -uroot web_mysqli_test < banhang.sql
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT price FROM tbl_product_variants WHERE product_id=1 AND variant_code='128GB'")" = '27500000'
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT price FROM tbl_product_variants WHERE product_id=1 AND variant_code='1TB'")" = '37500000'
+          mysql -h127.0.0.1 -uroot web_mysqli_test -e "UPDATE tbl_product_variants SET price=35900000 WHERE product_id=1 AND variant_code='1TB';"
+          mysql -h127.0.0.1 -uroot web_mysqli_test < banhang.sql
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT price FROM tbl_product_variants WHERE product_id=1 AND variant_code='1TB'")" = '35900000'
+      - name: Check PHP reads database variant prices exactly
         run: |
           php -r 'require "app.php"; $p=row("SELECT p.*,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.id_sanpham=1"); if(variant_price($p,"128GB")!==27500000)exit(1);if(variant_price($p,"1TB")!==35900000)exit(2);echo "All storefront capacity prices come from DB\n";'
           php -r 'require "app.php"; run("UPDATE tbl_product_variants SET price=? WHERE product_id=? AND variant_code=?", [37600000,1,"1TB"]);$p=row("SELECT p.*,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.id_sanpham=1");if(variant_price($p,"1TB")!==37600000)exit(1);echo "Admin price override is read from DB\n";'
-      - name: Test manual bank reconciliation, notifications, timeline, SMTP worker, inventory & revenue
-        env:
-          DB_HOST: 127.0.0.1
-          DB_NAME: web_mysqli
-          DB_USER: root
-          DB_PASS: root
+      - name: Run payment, notification, checkout-lock, SMTP and revenue integration tests
         run: |
           php tests/manual_payment.php
           php tests/order_notifications.php
@@ -74,10 +89,8 @@ jobs:
           php tests/order_notifications.php
           php tests/manual_payment.php
       - name: Verify upgrade from old v2 names preserves orders
-        env:
-          MYSQL_PWD: root
         run: |
-          mysql -h127.0.0.1 -uroot web_mysqli -e "INSERT INTO tbl_orders(order_code,user_id,customer_name,phone,delivery_address,total_amount) VALUES ('CI_PRESERVE',1,'CI','0900000000','CI address',1000);"
-          mysql -h127.0.0.1 -uroot web_mysqli -e "RENAME TABLE tbl_order_items TO v2_order_items, tbl_orders TO v2_orders, tbl_settings TO v2_settings, tbl_login_attempts TO v2_login_attempts;"
-          mysql -h127.0.0.1 -uroot < banhang.sql
-          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli -e "SELECT COUNT(*) FROM tbl_orders WHERE order_code='CI_PRESERVE'")" = '1'
+          mysql -h127.0.0.1 -uroot web_mysqli_test -e "INSERT INTO tbl_orders(order_code,user_id,customer_name,phone,delivery_address,total_amount) VALUES ('CI_PRESERVE',1,'CI','0900000000','CI address',1000);"
+          mysql -h127.0.0.1 -uroot web_mysqli_test -e "RENAME TABLE tbl_order_items TO v2_order_items, tbl_orders TO v2_orders, tbl_settings TO v2_settings, tbl_login_attempts TO v2_login_attempts;"
+          mysql -h127.0.0.1 -uroot web_mysqli_test < banhang.sql
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_orders WHERE order_code='CI_PRESERVE'")" = '1'
