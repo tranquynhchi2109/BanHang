@@ -2,6 +2,7 @@ name: PHP and database checks
 on:
   push:
     branches:
+      - main
       - redesign/premium-mainline
   pull_request:
     branches:

@@ -43,6 +43,13 @@ function project_url(string $path): string
 {
     return base_path() . '/' . ltrim($path, '/');
 }
+function asset_url(string $path): string
+{
+    $relative = ltrim($path, '/');
+    $file = __DIR__ . '/' . $relative;
+    $version = is_file($file) ? (string) filemtime($file) : '1';
+    return project_url($relative) . '?v=' . rawurlencode($version);
+}
 
 function db(): PDO
 {
@@ -332,7 +339,7 @@ function page_head(string $title, bool $admin = false): void
     $full = h($title . ' | ' . setting('store_name', 'BanHang Tech Store'));
     echo '<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
     echo '<title>' . $full . '</title><meta name="description" content="BanHang — công nghệ cho cuộc sống hiện đại.">';
-    echo '<link rel="stylesheet" href="' . h(project_url('css/style.css')) . '"><script src="' . h(project_url('js/app.js')) . '" defer></script></head><body>';
+    echo '<link rel="stylesheet" href="' . h(asset_url('css/style.css')) . '"><script src="' . h(asset_url('js/app.js')) . '" defer></script></head><body>';
     if ($admin) return;
     $user = current_user();
     $count = array_sum(array_map('intval', $_SESSION['cart'] ?? []));
