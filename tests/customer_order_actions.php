@@ -72,6 +72,12 @@ try {
     action_ok((int)row("SELECT COUNT(*) AS n FROM tbl_inventory_movements WHERE order_id=? AND movement_type='ORDER_CANCEL_RESTORE'",[$cod['id']])['n']===1,'one restore ledger entry');
     action_refuses(fn()=>customer_change_payment_method($cod['code'],$ownerId,'BANK'),'change payment after cancellation');
 
+    // 1b: BANK self cancellation requires an explicit no-transfer confirmation.
+    $unpaidBank=$makeOrder('BNK','BANK');
+    action_refuses(fn()=>customer_cancel_order($unpaidBank['code'],$ownerId,'Đặt nhầm đơn hàng'),'BANK cancellation without no-transfer confirmation');
+    action_ok(customer_cancel_order($unpaidBank['code'],$ownerId,'Đặt nhầm đơn hàng',true)==='CANCELLED',
+        'BANK unpaid and unreported cancelled only after explicit no-transfer confirmation');
+
     // 2: COD -> BANK -> COD, original immutable snapshot must persist.
     $switch=$makeOrder('SW');
     action_refuses(fn()=>customer_change_payment_method($switch['code'],$otherId,'BANK'),'other user changes payment');
