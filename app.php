@@ -336,9 +336,454 @@ function login_admin(string $username, string $password): bool
  */
 
 /**
- * Manual bank transfer workflow. No bank API or browser proof confirms payment.
+ * Vietnamese status labels, notification center, order history & manual bank transfer workflow.
+ * No bank API or browser proof confirms payment.
  * Every mutation checks the owner/admin identity and locks the order row.
  */
+require_once __DIR__ . '/mailer.php';
+
+function order_status_label(string $status): string
+{
+    return match ($status) {
+        'PENDING' => 'Đã đặt hàng',
+        'CONFIRMED' => 'Đã xác nhận',
+        'PREPARING' => 'Đang chuẩn bị hàng',
+        'SHIPPING' => 'Đang giao hàng',
+        'COMPLETED' => 'Đã giao thành công',
+        'CANCELLED' => 'Đã hủy',
+        default => $status,
+    };
+}
+
+function order_status_tone(string $status): string
+{
+    return match ($status) {
+        'COMPLETED' => 'success',
+        'SHIPPING', 'PREPARING', 'CONFIRMED' => 'info',
+        'CANCELLED' => 'danger',
+        default => 'warning',
+    };
+}
+
+function payment_method_label(string $method): string
+{
+    return match ($method) {
+        'BANK' => 'Chuyển khoản ngân hàng (VietQR)',
+        'COD' => 'Thanh toán khi nhận hàng (COD)',
+        default => $method,
+    };
+}
+
+function payment_review_label(string $review): string
+{
+    return match ($review) {
+        'REPORTED' => 'Khách báo đã chuyển khoản · Đang chờ đối soát',
+        'REJECTED' => 'Cần kiểm tra lại',
+        'VERIFIED' => 'Đã xác nhận thanh toán',
+        default => 'Chưa báo chuyển khoản',
+    };
+}
+
+function payment_state_summary(array $order): array
+{
+    $method = (string)($order['payment_method'] ?? 'COD');
+    $status = (string)($order['payment_status'] ?? 'UNPAID');
+    $review = (string)($order['payment_review_status'] ?? 'NONE');
+    $orderStatus = (string)($order['order_status'] ?? 'PENDING');
+
+    if ($method === 'BANK') {
+        if ($status === 'PAID') {
+            return [
+                'label' => 'Đã xác nhận thanh toán',
+                'tone' => 'success',
+                'detail' => 'Admin đã đối soát sao kê MB Bank và xác nhận nhận đủ tiền.',
+            ];
+        }
+        if ($orderStatus === 'CANCELLED') {
+            return [
+                'label' => 'Chưa thanh toán (Đơn đã hủy)',
+                'tone' => 'danger',
+                'detail' => 'Đơn hàng đã bị hủy trước khi xác nhận thanh toán.',
+            ];
+        }
+        if ($review === 'REPORTED') {
+            return [
+                'label' => 'Đang chờ đối soát',
+                'tone' => 'info',
+                'detail' => 'Khách báo đã chuyển khoản. Cửa hàng đang kiểm tra sao kê MB Bank.',
+            ];
+        }
+        if ($review === 'REJECTED') {
+            return [
+                'label' => 'Cần kiểm tra lại',
+                'tone' => 'warning',
+                'detail' => 'Cửa hàng chưa tìm thấy giao dịch khớp trên sao kê MB Bank.',
+            ];
+        }
+        return [
+            'label' => 'Chưa thanh toán',
+            'tone' => 'warning',
+            'detail' => 'Vui lòng chuyển khoản đúng số tiền và nội dung đơn hàng qua VietQR.',
+        ];
+    }
+
+    if ($status === 'PAID') {
+        return [
+            'label' => 'Đã xác nhận thu tiền COD',
+            'tone' => 'success',
+            'detail' => 'Cửa hàng đã xác nhận thu đủ tiền mặt khi giao hàng.',
+        ];
+    }
+    if ($orderStatus === 'CANCELLED') {
+        return [
+            'label' => 'Không thu tiền (Đơn đã hủy)',
+            'tone' => 'danger',
+            'detail' => 'Đơn hàng COD đã bị hủy.',
+        ];
+    }
+    return [
+        'label' => 'Chưa thanh toán (COD)',
+        'tone' => 'neutral',
+        'detail' => 'Thanh toán trực tiếp khi nhận hàng.',
+    ];
+}
+
+function create_notification(
+    int $userId,
+    ?int $orderId,
+    string $type,
+    string $title,
+    string $message,
+    string $linkUrl = '',
+    ?string $dedupKey = null
+): bool {
+    if ($userId < 1) return false;
+    $title = mb_substr(trim($title), 0, 180);
+    $message = mb_substr(trim($message), 0, 600);
+    $linkUrl = mb_substr(trim($linkUrl), 0, 255);
+    if ($title === '' || $message === '') return false;
+    $affected = run(
+        'INSERT IGNORE INTO tbl_notifications(user_id,order_id,notification_type,dedup_key,title,message,link_url)
+         VALUES (?,?,?,?,?,?,?)',
+        [$userId, $orderId, mb_substr($type, 0, 40), $dedupKey, $title, $message, $linkUrl]
+    );
+    return $affected === 1;
+}
+
+function user_notifications(int $userId, int $limit = 20, int $offset = 0, bool $unreadOnly = false): array
+{
+    $limit = max(1, min(100, $limit));
+    $offset = max(0, $offset);
+    $where = 'user_id=?';
+    if ($unreadOnly) $where .= ' AND is_read=0';
+    return rows(
+        "SELECT id,order_id,notification_type,title,message,link_url,is_read,created_at,read_at
+         FROM tbl_notifications WHERE {$where} ORDER BY id DESC LIMIT {$limit} OFFSET {$offset}",
+        [$userId]
+    );
+}
+
+function unread_notification_count(int $userId): int
+{
+    $res = row('SELECT COUNT(*) AS n FROM tbl_notifications WHERE user_id=? AND is_read=0', [$userId]);
+    return (int)($res['n'] ?? 0);
+}
+
+function mark_notification_read(int $userId, int $notificationId): int
+{
+    return run(
+        'UPDATE tbl_notifications SET is_read=1, read_at=COALESCE(read_at, NOW()) WHERE id=? AND user_id=? AND is_read=0',
+        [$notificationId, $userId]
+    );
+}
+
+function mark_all_notifications_read(int $userId): int
+{
+    return run(
+        'UPDATE tbl_notifications SET is_read=1, read_at=COALESCE(read_at, NOW()) WHERE user_id=? AND is_read=0',
+        [$userId]
+    );
+}
+
+function admin_pending_reconciliation_count(): int
+{
+    $res = row(
+        "SELECT COUNT(*) AS n FROM tbl_orders
+         WHERE payment_method='BANK' AND payment_review_status='REPORTED' AND payment_status='UNPAID' AND order_status<>'CANCELLED'"
+    );
+    return (int)($res['n'] ?? 0);
+}
+
+function admin_send_order_notification(int $customerId, int $orderId, int $adminId, string $title, string $message): void
+{
+    $title = trim($title);
+    $message = trim($message);
+    if (mb_strlen($title) < 3 || mb_strlen($title) > 180 || mb_strlen($message) < 5 || mb_strlen($message) > 600) {
+        throw new DomainException('Tiêu đề (3–180 ký tự) và nội dung thông báo (5–600 ký tự) không hợp lệ.');
+    }
+    $order = row('SELECT id,order_code,user_id FROM tbl_orders WHERE id=? AND user_id=? LIMIT 1', [$orderId, $customerId]);
+    if (!$order) {
+        throw new DomainException('Đơn hàng không thuộc khách hàng này.');
+    }
+    $link = link_to('order', ['code' => $order['order_code']]);
+    create_notification($customerId, $orderId, 'ADMIN_MESSAGE', $title, $message, $link, null);
+    record_order_history($orderId, null, 'MESSAGE', 'ADMIN', $adminId, "Gửi thông báo tới khách: {$title}", false);
+}
+
+function record_order_history(
+    int $orderId,
+    ?string $fromStatus,
+    string $toStatus,
+    string $actorType,
+    int $actorId,
+    string $note = '',
+    bool $isPublic = true
+): void {
+    run(
+        'INSERT INTO tbl_order_status_history(order_id,from_status,to_status,actor_type,actor_id,note,is_public)
+         VALUES (?,?,?,?,?,?,?)',
+        [$orderId, $fromStatus, mb_substr($toStatus, 0, 30), $actorType, $actorId, mb_substr(trim($note), 0, 500), $isPublic ? 1 : 0]
+    );
+}
+
+function order_status_transitions(): array
+{
+    return [
+        'PENDING' => ['CONFIRMED', 'CANCELLED'],
+        'CONFIRMED' => ['PREPARING', 'SHIPPING', 'CANCELLED'],
+        'PREPARING' => ['SHIPPING', 'CANCELLED'],
+        'SHIPPING' => ['COMPLETED'],
+        'COMPLETED' => [],
+        'CANCELLED' => [],
+    ];
+}
+
+function update_order_status(int $orderId, int $adminId, string $next, array $options = []): array
+{
+    $carrier = trim((string)($options['shipping_carrier'] ?? ''));
+    $tracking = trim((string)($options['tracking_code'] ?? ''));
+    $adminNote = trim((string)($options['admin_note'] ?? ''));
+    $customerNote = trim((string)($options['customer_note'] ?? ''));
+    $cancelReason = trim((string)($options['cancel_reason'] ?? ''));
+
+    if (mb_strlen($carrier) > 100 || mb_strlen($tracking) > 100 || mb_strlen($adminNote) > 500
+        || mb_strlen($customerNote) > 500 || mb_strlen($cancelReason) > 300) {
+        throw new DomainException('Thông tin ghi chú hoặc vận chuyển vượt quá độ dài cho phép.');
+    }
+    if (preg_match('/[\x00-\x1F\x7F]/', $carrier . $tracking)) {
+        throw new DomainException('Đơn vị vận chuyển hoặc mã vận đơn chứa ký tự không hợp lệ.');
+    }
+
+    $emailPayload = null;
+    db()->beginTransaction();
+    try {
+        $order = row('SELECT * FROM tbl_orders WHERE id=? FOR UPDATE', [$orderId]);
+        if (!$order) throw new DomainException('Không tìm thấy đơn hàng.');
+
+        $from = (string)$order['order_status'];
+        $transitions = order_status_transitions();
+        if (!in_array($next, $transitions[$from] ?? [], true)) {
+            throw new DomainException('Chuyển trạng thái đơn hàng không được phép theo quy trình hiện tại.');
+        }
+        if ($order['payment_method'] === 'BANK' && $order['payment_status'] !== 'PAID'
+            && in_array($next, ['CONFIRMED', 'PREPARING', 'SHIPPING', 'COMPLETED'], true)) {
+            throw new DomainException('Đơn chuyển khoản BANK phải được đối soát và xác nhận đã nhận tiền trước khi xác nhận/giao hàng.');
+        }
+
+        if ($next === 'CANCELLED') {
+            if ($order['payment_status'] === 'PAID') {
+                throw new DomainException('Đơn đã thanh toán cần xử lý hoàn tiền thủ công trước khi hủy.');
+            }
+            if ($order['payment_review_status'] === 'REPORTED') {
+                throw new DomainException('Khách đã báo chuyển tiền. Phải đối soát ngân hàng trước khi hủy.');
+            }
+            if ($cancelReason === '') {
+                $cancelReason = $customerNote !== '' ? $customerNote : 'Đơn hàng được hủy theo yêu cầu quản trị.';
+            }
+            $items = rows('SELECT product_id,quantity FROM tbl_order_items WHERE order_id=?', [$orderId]);
+            foreach ($items as $item) {
+                run('UPDATE tbl_sanpham SET soluong=soluong+? WHERE id_sanpham=?', [(int)$item['quantity'], (int)$item['product_id']]);
+            }
+        }
+
+        $finalCarrier = $carrier !== '' ? $carrier : (string)($order['shipping_carrier'] ?? '');
+        $finalTracking = $tracking !== '' ? $tracking : (string)($order['tracking_code'] ?? '');
+        $finalAdminNote = $adminNote !== '' ? $adminNote : (string)($order['admin_note'] ?? '');
+        $finalCustomerNote = $customerNote !== '' ? $customerNote : (string)($order['customer_note'] ?? '');
+        $finalCancelReason = $next === 'CANCELLED' ? $cancelReason : (string)($order['cancel_reason'] ?? '');
+
+        $extraTimeSql = '';
+        if ($next === 'SHIPPING') $extraTimeSql = ', shipped_at=COALESCE(shipped_at, NOW())';
+        elseif ($next === 'COMPLETED') $extraTimeSql = ', delivered_at=COALESCE(delivered_at, NOW())';
+
+        run(
+            "UPDATE tbl_orders
+             SET order_status=?, shipping_carrier=?, tracking_code=?, admin_note=?, customer_note=?, cancel_reason=?{$extraTimeSql}
+             WHERE id=?",
+            [$next, $finalCarrier, $finalTracking, $finalAdminNote, $finalCustomerNote, $finalCancelReason, $orderId]
+        );
+
+        $publicNote = match ($next) {
+            'CONFIRMED' => $customerNote !== '' ? $customerNote : 'Cửa hàng đã xác nhận đơn hàng.',
+            'PREPARING' => $customerNote !== '' ? $customerNote : 'Đơn hàng đang được kiểm tra và đóng gói.',
+            'SHIPPING' => trim(($customerNote !== '' ? $customerNote . ' ' : 'Đơn hàng đã bàn giao cho đơn vị vận chuyển.')
+                . ($finalCarrier !== '' ? " ĐVVC: {$finalCarrier}." : '')
+                . ($finalTracking !== '' ? " Mã vận đơn: {$finalTracking}." : '')),
+            'COMPLETED' => $customerNote !== '' ? $customerNote : 'Đơn hàng đã được giao thành công đến khách hàng.',
+            'CANCELLED' => 'Lý do hủy: ' . $finalCancelReason,
+            default => $customerNote,
+        };
+        record_order_history($orderId, $from, $next, 'ADMIN', $adminId, $publicNote, true);
+        if ($adminNote !== '' && $adminNote !== (string)($order['admin_note'] ?? '')) {
+            record_order_history($orderId, $from, $next, 'ADMIN', $adminId, 'Ghi chú nội bộ: ' . $adminNote, false);
+        }
+
+        $code = (string)$order['order_code'];
+        $link = link_to('order', ['code' => $code]);
+        [$nType, $nTitle, $nMsg, $mailEvent] = match ($next) {
+            'CONFIRMED' => [
+                'ORDER_CONFIRMED',
+                'Đơn hàng đã được xác nhận',
+                "Đơn hàng {$code} đã được BanHang xác nhận." . ($customerNote !== '' ? " Ghi chú: {$customerNote}" : ''),
+                'ORDER_CONFIRMED',
+            ],
+            'PREPARING' => [
+                'ORDER_PREPARING',
+                'Đơn hàng đang được chuẩn bị',
+                "BanHang đang kiểm tra và đóng gói đơn hàng {$code}." . ($customerNote !== '' ? " {$customerNote}" : ''),
+                'ORDER_PREPARING',
+            ],
+            'SHIPPING' => [
+                'ORDER_SHIPPING',
+                'Đơn hàng đang được giao',
+                "Đơn hàng {$code} đã được giao cho đơn vị vận chuyển."
+                . ($finalCarrier !== '' ? " Đơn vị: {$finalCarrier}." : '')
+                . ($finalTracking !== '' ? " Mã vận đơn: {$finalTracking}." : '')
+                . ($customerNote !== '' ? " {$customerNote}" : ''),
+                'ORDER_SHIPPING',
+            ],
+            'COMPLETED' => [
+                'ORDER_COMPLETED',
+                'Giao hàng thành công!',
+                "Đơn hàng {$code} đã được giao thành công. Cảm ơn bạn đã mua sắm tại BanHang!" . ($customerNote !== '' ? " {$customerNote}" : ''),
+                'ORDER_COMPLETED',
+            ],
+            'CANCELLED' => [
+                'ORDER_CANCELLED',
+                'Đơn hàng đã bị hủy',
+                "Đơn hàng {$code} đã bị hủy. Lý do: {$finalCancelReason}.",
+                'ORDER_CANCELLED',
+            ],
+            default => ['ORDER_UPDATE', 'Cập nhật đơn hàng', "Đơn hàng {$code} vừa được cập nhật.", 'ORDER_UPDATE'],
+        };
+
+        create_notification(
+            (int)$order['user_id'],
+            $orderId,
+            $nType,
+            $nTitle,
+            $nMsg,
+            $link,
+            "order_status:{$orderId}:{$next}"
+        );
+
+        $updatedOrder = row('SELECT * FROM tbl_orders WHERE id=?', [$orderId]);
+        queue_order_email($updatedOrder, $mailEvent, $publicNote, "email_status:{$orderId}:{$next}");
+        $emailPayload = $updatedOrder;
+
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        throw $e;
+    }
+
+    dispatch_email_outbox(5);
+    return $emailPayload;
+}
+
+function save_order_notes(int $orderId, int $adminId, array $data): void
+{
+    $carrier = trim((string)($data['shipping_carrier'] ?? ''));
+    $tracking = trim((string)($data['tracking_code'] ?? ''));
+    $adminNote = trim((string)($data['admin_note'] ?? ''));
+    $customerNote = trim((string)($data['customer_note'] ?? ''));
+    if (mb_strlen($carrier) > 100 || mb_strlen($tracking) > 100 || mb_strlen($adminNote) > 500 || mb_strlen($customerNote) > 500) {
+        throw new DomainException('Ghi chú hoặc thông tin vận chuyển vượt giới hạn.');
+    }
+    if (preg_match('/[\x00-\x1F\x7F]/', $carrier . $tracking)) {
+        throw new DomainException('Thông tin vận chuyển chứa ký tự không hợp lệ.');
+    }
+    db()->beginTransaction();
+    try {
+        $order = row('SELECT id,order_code,user_id,order_status,tracking_code,shipping_carrier,customer_note FROM tbl_orders WHERE id=? FOR UPDATE', [$orderId]);
+        if (!$order) throw new DomainException('Không tìm thấy đơn hàng.');
+        run(
+            'UPDATE tbl_orders SET shipping_carrier=?, tracking_code=?, admin_note=?, customer_note=? WHERE id=?',
+            [$carrier, $tracking, $adminNote, $customerNote, $orderId]
+        );
+        $trackingChanged = ($tracking !== '' && $tracking !== (string)$order['tracking_code'])
+            || ($carrier !== '' && $carrier !== (string)$order['shipping_carrier']);
+        if ($trackingChanged) {
+            $detail = trim(($carrier !== '' ? "ĐVVC: {$carrier}. " : '') . ($tracking !== '' ? "Mã vận đơn: {$tracking}." : ''));
+            record_order_history($orderId, (string)$order['order_status'], (string)$order['order_status'], 'ADMIN', $adminId, 'Cập nhật vận chuyển: ' . $detail, true);
+            create_notification(
+                (int)$order['user_id'],
+                $orderId,
+                'ORDER_SHIPPING_INFO',
+                'Cập nhật thông tin vận chuyển',
+                "Đơn hàng {$order['order_code']} đã cập nhật thông tin vận chuyển. {$detail}",
+                link_to('order', ['code' => $order['order_code']]),
+                'order_track:' . $orderId . ':' . sha1($carrier . '|' . $tracking)
+            );
+        }
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        throw $e;
+    }
+}
+
+function confirm_cod_payment(int $orderId, int $adminId, string $note = ''): void
+{
+    $note = trim($note);
+    if (mb_strlen($note) > 300 || preg_match('/[\x00-\x1F\x7F]/', $note)) {
+        throw new DomainException('Ghi chú xác nhận thu tiền COD không hợp lệ.');
+    }
+    db()->beginTransaction();
+    try {
+        $order = row('SELECT * FROM tbl_orders WHERE id=? FOR UPDATE', [$orderId]);
+        if (!$order || $order['payment_method'] !== 'COD' || $order['payment_status'] !== 'UNPAID') {
+            throw new DomainException('Đơn hàng COD không hợp lệ hoặc đã được xác nhận thu tiền.');
+        }
+        if (!in_array($order['order_status'], ['SHIPPING', 'COMPLETED'], true)) {
+            throw new DomainException('Chỉ xác nhận thu tiền COD khi đơn đang giao hoặc đã giao thành công.');
+        }
+        run(
+            "UPDATE tbl_orders SET payment_status='PAID', cod_paid_at=NOW(), cod_verified_by=? WHERE id=?",
+            [$adminId, $orderId]
+        );
+        $detail = 'Admin xác nhận đã thu đủ tiền COD ' . money((int)$order['total_amount']) . ($note !== '' ? ' · ' . $note : '');
+        payment_event($orderId, 'ADMIN_COD_PAID', 'ADMIN', $adminId, $detail, null);
+        record_order_history($orderId, (string)$order['order_status'], (string)$order['order_status'], 'ADMIN', $adminId, 'Đã xác nhận thanh toán COD.', true);
+        create_notification(
+            (int)$order['user_id'],
+            $orderId,
+            'PAYMENT_CONFIRMED',
+            'Xác nhận đã thu tiền COD',
+            "BanHang đã xác nhận nhận đủ " . money((int)$order['total_amount']) . " tiền thanh toán COD cho đơn hàng {$order['order_code']}.",
+            link_to('order', ['code' => $order['order_code']]),
+            "order_cod_paid:{$orderId}"
+        );
+        $updated = row('SELECT * FROM tbl_orders WHERE id=?', [$orderId]);
+        queue_order_email($updated, 'PAYMENT_CONFIRMED', $detail, "email_cod_paid:{$orderId}");
+        db()->commit();
+    } catch (Throwable $e) {
+        if (db()->inTransaction()) db()->rollBack();
+        throw $e;
+    }
+    dispatch_email_outbox(5);
+}
+
 function payment_event(int $orderId, string $event, string $actorType, int $actorId, string $detail = '', ?string $reference = null): void
 {
     run('INSERT INTO tbl_payment_events(order_id,event_type,actor_type,actor_id,detail,reference_code)
@@ -353,7 +798,7 @@ function report_bank_transfer(string $code, int $customerId, string $note): void
     }
     db()->beginTransaction();
     try {
-        $order=row('SELECT id,payment_method,payment_status,payment_review_status,order_status
+        $order=row('SELECT id,order_code,total_amount,payment_method,payment_status,payment_review_status,order_status
                     FROM tbl_orders WHERE order_code=? AND user_id=? FOR UPDATE',[$code,$customerId]);
         if (!$order) throw new DomainException('Không tìm thấy đơn hàng của bạn.');
         if ($order['payment_method']!=='BANK' || $order['payment_status']!=='UNPAID'
@@ -363,6 +808,16 @@ function report_bank_transfer(string $code, int $customerId, string $note): void
         run("UPDATE tbl_orders SET payment_review_status='REPORTED', payment_reported_at=NOW(), customer_transfer_note=?
              WHERE id=?",[$note,$order['id']]);
         payment_event((int)$order['id'],'CUSTOMER_REPORTED','CUSTOMER',$customerId,$note);
+        $reportCount = (int)(row("SELECT COUNT(*) AS n FROM tbl_payment_events WHERE order_id=? AND event_type='CUSTOMER_REPORTED'", [(int)$order['id']])['n'] ?? 1);
+        create_notification(
+            $customerId,
+            (int)$order['id'],
+            'PAYMENT_REPORTED',
+            'Đã ghi nhận báo chuyển khoản',
+            "BanHang đã nhận thông báo chuyển khoản cho đơn hàng {$order['order_code']} (" . money((int)$order['total_amount']) . "). Cửa hàng sẽ đối soát trực tiếp sao kê MB Bank rồi xác nhận sớm nhất.",
+            link_to('order', ['code' => $order['order_code']]),
+            "bank_reported:{$order['id']}:{$reportCount}"
+        );
         db()->commit();
     } catch (Throwable $e) {
         if (db()->inTransaction()) db()->rollBack();
@@ -379,8 +834,7 @@ function confirm_bank_transfer(int $orderId, int $adminId, string $reference, in
     if ($receivedAmount<=0) throw new DomainException('Số tiền đối soát không hợp lệ.');
     db()->beginTransaction();
     try {
-        $order=row('SELECT id,total_amount,payment_method,payment_status,order_status
-                    FROM tbl_orders WHERE id=? FOR UPDATE',[$orderId]);
+        $order=row('SELECT * FROM tbl_orders WHERE id=? FOR UPDATE',[$orderId]);
         if (!$order || $order['payment_method']!=='BANK' || $order['payment_status']!=='UNPAID'
             || $order['order_status']==='CANCELLED')
             throw new DomainException('Không thể xác nhận đơn này hoặc đơn đã được thanh toán.');
@@ -393,6 +847,28 @@ function confirm_bank_transfer(int $orderId, int $adminId, string $reference, in
              [$adminId,$reference,$orderId]);
         payment_event($orderId,'ADMIN_CONFIRMED','ADMIN',$adminId,
             'Admin đã đối soát đủ số tiền '.(string)$receivedAmount.' VND với sao kê MB Bank',$reference);
+        record_order_history(
+            $orderId,
+            (string)$order['order_status'],
+            (string)$order['order_status'],
+            'ADMIN',
+            $adminId,
+            'Đã đối soát và xác nhận nhận đủ ' . money($receivedAmount) . ' qua MB Bank.',
+            true
+        );
+        $code = (string)$order['order_code'];
+        $msg = "BanHang đã xác nhận nhận đủ " . money($receivedAmount) . " cho đơn hàng {$code}. Đơn hàng của bạn đang được chuẩn bị. Chúng tôi sẽ cập nhật ngay khi sản phẩm được giao cho đơn vị vận chuyển.";
+        create_notification(
+            (int)$order['user_id'],
+            $orderId,
+            'PAYMENT_CONFIRMED',
+            'Thanh toán thành công!',
+            $msg,
+            link_to('order', ['code' => $code]),
+            "order_paid:{$orderId}"
+        );
+        $updated = row('SELECT * FROM tbl_orders WHERE id=?', [$orderId]);
+        queue_order_email($updated, 'PAYMENT_CONFIRMED', $msg, "email_paid:{$orderId}");
         db()->commit();
     } catch (Throwable $e) {
         if (db()->inTransaction()) db()->rollBack();
@@ -400,6 +876,7 @@ function confirm_bank_transfer(int $orderId, int $adminId, string $reference, in
             throw new DomainException('Mã giao dịch đã được sử dụng. Kiểm tra sao kê và các đơn đã xác nhận.');
         throw $e;
     }
+    dispatch_email_outbox(5);
 }
 
 function reject_bank_report(int $orderId, int $adminId, string $reason): void
@@ -409,26 +886,39 @@ function reject_bank_report(int $orderId, int $adminId, string $reason): void
         throw new DomainException('Nhập lý do cần đối chiếu lại (5–300 ký tự).');
     db()->beginTransaction();
     try {
-        $order=row('SELECT id,payment_status,payment_method,order_status,payment_review_status
-                    FROM tbl_orders WHERE id=? FOR UPDATE',[$orderId]);
+        $order=row('SELECT * FROM tbl_orders WHERE id=? FOR UPDATE',[$orderId]);
         if (!$order || $order['payment_method']!=='BANK' || $order['payment_status']!=='UNPAID'
             || $order['order_status']==='CANCELLED' || $order['payment_review_status']!=='REPORTED')
             throw new DomainException('Không có báo cáo chuyển khoản đang chờ xem xét.');
         run("UPDATE tbl_orders SET payment_review_status='REJECTED' WHERE id=?",[$orderId]);
         payment_event($orderId,'ADMIN_REJECTED','ADMIN',$adminId,$reason);
+        $rejCount = (int)(row("SELECT COUNT(*) AS n FROM tbl_payment_events WHERE order_id=? AND event_type='ADMIN_REJECTED'", [$orderId])['n'] ?? 1);
+        $code = (string)$order['order_code'];
+        $msg = "Cửa hàng chưa tìm thấy giao dịch khớp cho đơn hàng {$code}. Lý do: {$reason}. Vui lòng kiểm tra lại sao kê ngân hàng và gửi báo cáo lại nếu cần.";
+        create_notification(
+            (int)$order['user_id'],
+            $orderId,
+            'PAYMENT_REJECTED',
+            'Cần kiểm tra lại giao dịch chuyển khoản',
+            $msg,
+            link_to('order', ['code' => $code]),
+            "bank_rejected:{$orderId}:{$rejCount}"
+        );
+        $updated = row('SELECT * FROM tbl_orders WHERE id=?', [$orderId]);
+        queue_order_email($updated, 'PAYMENT_REJECTED', "Lý do: {$reason}", "email_rejected:{$orderId}:{$rejCount}");
         db()->commit();
     } catch (Throwable $e) {
         if (db()->inTransaction()) db()->rollBack();
         throw $e;
     }
+    dispatch_email_outbox(5);
 }
 
 function expire_unpaid_bank_order(int $orderId, int $adminId): void
 {
     db()->beginTransaction();
     try {
-        $order=row('SELECT id,payment_method,payment_status,payment_review_status,order_status,
-                    (created_at < NOW() - INTERVAL 24 HOUR) AS past_deadline
+        $order=row('SELECT *, (created_at < NOW() - INTERVAL 24 HOUR) AS past_deadline
                     FROM tbl_orders WHERE id=? FOR UPDATE',[$orderId]);
         if (!$order || $order['payment_method']!=='BANK' || $order['payment_status']!=='UNPAID'
             || $order['order_status']!=='PENDING' || !$order['past_deadline'])
@@ -440,14 +930,28 @@ function expire_unpaid_bank_order(int $orderId, int $adminId): void
             run('UPDATE tbl_sanpham SET soluong=soluong+? WHERE id_sanpham=?',
                 [(int)$item['quantity'],(int)$item['product_id']]);
         }
-        run("UPDATE tbl_orders SET order_status='CANCELLED' WHERE id=?",[$orderId]);
+        $reason = 'Đơn hàng chuyển khoản chưa thanh toán quá 24 giờ và đã được hủy thủ công.';
+        run("UPDATE tbl_orders SET order_status='CANCELLED', cancel_reason=? WHERE id=?",[$reason, $orderId]);
         payment_event($orderId,'ADMIN_EXPIRED','ADMIN',$adminId,
             'Hủy thủ công đơn chưa thanh toán quá 24 giờ; đã hoàn tồn kho.');
+        record_order_history($orderId, 'PENDING', 'CANCELLED', 'ADMIN', $adminId, $reason, true);
+        create_notification(
+            (int)$order['user_id'],
+            $orderId,
+            'ORDER_CANCELLED',
+            'Đơn hàng đã bị hủy do quá hạn thanh toán',
+            "Đơn hàng {$order['order_code']} đã bị hủy do quá 24 giờ chưa ghi nhận thanh toán.",
+            link_to('order', ['code' => $order['order_code']]),
+            "order_expired:{$orderId}"
+        );
+        $updated = row('SELECT * FROM tbl_orders WHERE id=?', [$orderId]);
+        queue_order_email($updated, 'ORDER_CANCELLED', $reason, "email_expired:{$orderId}");
         db()->commit();
     } catch (Throwable $e) {
         if (db()->inTransaction()) db()->rollBack();
         throw $e;
     }
+    dispatch_email_outbox(5);
 }
 
 function safe_image(string $filename, string $kind = 'product'): string
@@ -535,25 +1039,64 @@ function page_head(string $title, bool $admin = false): void
     $full = h($title . ' | ' . setting('store_name', 'BanHang Tech Store'));
     echo '<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
     echo '<title>' . $full . '</title><meta name="description" content="BanHang — công nghệ cho cuộc sống hiện đại.">';
+    echo '<meta name="csrf-token" content="' . h(csrf_token()) . '">';
+    echo '<meta name="api-url" content="' . h(project_url('api.php')) . '">';
     echo '<link rel="stylesheet" href="' . h(asset_url('css/style.css')) . '"><script src="' . h(asset_url('js/app.js')) . '" defer></script></head><body>';
     if ($admin) return;
     $user = current_user();
     $count = array_sum(array_map('intval', $_SESSION['cart'] ?? []));
-    echo '<div class="utility"><div class="container utility__inner"><span>BANHANG / TECH & LIFESTYLE</span><span>Công nghệ chọn lọc · Trải nghiệm tốt hơn mỗi ngày</span><span>Hỗ trợ khách hàng</span></div></div>';
-    echo '<header class="header"><div class="container header__main"><a class="brand" href="index.php"><span class="brand__mark">B</span><span>BANHANG<small>TECH STORE</small></span></a>';
+    $unreadCount = 0;
+    $recentNotifs = [];
+    if ($user) {
+        try {
+            $unreadCount = unread_notification_count((int)$user['id_dangky']);
+            $recentNotifs = user_notifications((int)$user['id_dangky'], 6, 0);
+        } catch (Throwable $e) {
+            error_log('[BanHang notif header] ' . $e->getMessage());
+        }
+    }
+    echo '<div class="utility"><div class="container utility__inner"><span>BANHANG / TECH & LIFESTYLE</span><span>Công nghệ chọn lọc · Trải nghiệm tốt hơn mỗi ngày</span><a href="' . link_to('contact') . '">Hỗ trợ khách hàng</a></div></div>';
+    echo '<header class="header" data-logged-in="' . ($user ? '1' : '0') . '"><div class="container header__main"><a class="brand" href="index.php"><span class="brand__mark">B</span><span>BANHANG<small>TECH STORE</small></span></a>';
     echo '<form class="search" method="get" action="index.php"><input type="hidden" name="page" value="products"><span class="search__icon">⌕</span><input name="q" maxlength="120" placeholder="Tìm điện thoại, laptop hay phụ kiện?" value="' . h($_GET['q'] ?? '') . '"><button type="submit">Tìm kiếm</button></form>';
-    echo '<div class="header__links"><a href="' . link_to($user ? 'account' : 'login') . '">♙ <span>' . ($user ? h($user['tenkhachhang']) : 'Tài khoản') . '</span></a>';
+    echo '<div class="header__links">';
+    if ($user) {
+        echo '<div class="notif-wrap" data-notif-wrap>';
+        echo '<button type="button" class="notif-bell" aria-label="Thông báo" aria-expanded="false" data-notif-toggle>';
+        echo '<span class="notif-bell__icon">🔔</span>';
+        echo '<span class="notif-badge' . ($unreadCount > 0 ? '' : ' is-hidden') . '" data-notif-badge>' . ($unreadCount > 99 ? '99+' : $unreadCount) . '</span>';
+        echo '</button>';
+        echo '<div class="notif-dropdown" id="notif-dropdown" hidden>';
+        echo '<div class="notif-dropdown__head"><strong>Thông báo</strong>';
+        echo '<button type="button" class="link-blue notif-mark-all" data-notif-mark-all>Đánh dấu đã đọc</button></div>';
+        echo '<div class="notif-dropdown__list" data-notif-list>';
+        if (!$recentNotifs) {
+            echo '<p class="notif-empty">Chưa có thông báo nào.</p>';
+        } else {
+            foreach ($recentNotifs as $n) {
+                $href = trim((string)$n['link_url']) !== '' ? (string)$n['link_url'] : link_to('notifications');
+                echo '<a class="notif-item' . ((int)$n['is_read'] === 0 ? ' is-unread' : '') . '" href="' . h($href) . '" data-notif-id="' . (int)$n['id'] . '">';
+                echo '<strong>' . h($n['title']) . '</strong>';
+                echo '<p>' . h($n['message']) . '</p>';
+                echo '<small>' . h($n['created_at']) . '</small></a>';
+            }
+        }
+        echo '</div><div class="notif-dropdown__foot"><a href="' . link_to('notifications') . '">Xem tất cả thông báo →</a></div></div></div>';
+    }
+    echo '<a href="' . link_to($user ? 'account' : 'login') . '">♙ <span>' . ($user ? h($user['tenkhachhang']) : 'Tài khoản') . '</span></a>';
     echo '<a href="' . link_to('cart') . '">♧ <span>Giỏ hàng (' . $count . ')</span></a>';
     echo '<button class="mobile-toggle" type="button" aria-label="Mở menu" data-menu-toggle>☰</button></div></div>';
     echo '<nav class="nav container" id="mobile-nav"><a href="' . link_to('products') . '">Tất cả sản phẩm</a><a href="' . link_to('products', ['category' => 'phone']) . '">Điện thoại</a>';
     echo '<a href="' . link_to('products', ['category' => 'laptop']) . '">Laptop</a><a href="' . link_to('products', ['category' => 'audio']) . '">Âm thanh</a>';
     echo '<a href="' . link_to('products', ['category' => 'watch']) . '">Đồng hồ</a><a href="' . link_to('products', ['category' => 'accessories']) . '">Phụ kiện</a>';
-    echo '<a href="' . link_to('news') . '">Tin công nghệ</a><a href="' . link_to('orders') . '">Đơn hàng</a><a href="' . admin_to('dashboard') . '">Quản trị</a></nav></header>';
+    echo '<a href="' . link_to('news') . '">Tin công nghệ</a><a href="' . link_to('orders') . '">Đơn hàng</a>';
+    if ($user) echo '<a href="' . link_to('notifications') . '">Thông báo</a>';
+    echo '<a href="' . admin_to('dashboard') . '">Quản trị</a></nav></header>';
 }
 function page_foot(bool $admin = false): void
 {
     if (!$admin) {
-        echo '<footer class="footer"><div class="container footer__grid"><section><h2>BANHANG.</h2><p>Công nghệ dành cho cuộc sống hiện đại.</p></section><section><h3>Mua sắm</h3><a href="' . link_to('products') . '">Sản phẩm</a><a href="' . link_to('cart') . '">Giỏ hàng</a></section><section><h3>Hỗ trợ</h3><a href="' . link_to('orders') . '">Đơn hàng</a><a href="' . link_to('news') . '">Tin tức</a></section><section><h3>Thông tin</h3><p>Trải nghiệm công nghệ hiện đại.</p></section></div></footer>';
+        echo '<div class="toast-region" id="toast-region" aria-live="polite"></div>';
+        echo '<footer class="footer"><div class="container footer__grid"><section><h2>BANHANG.</h2><p>Công nghệ dành cho cuộc sống hiện đại.</p></section><section><h3>Mua sắm</h3><a href="' . link_to('products') . '">Sản phẩm</a><a href="' . link_to('cart') . '">Giỏ hàng</a></section><section><h3>Hỗ trợ</h3><a href="' . link_to('orders') . '">Đơn hàng</a><a href="' . link_to('notifications') . '">Thông báo</a><a href="' . link_to('contact') . '">Liên hệ hỗ trợ</a></section><section><h3>Thông tin</h3><p>Trải nghiệm công nghệ hiện đại.</p></section></div></footer>';
     }
     echo '</body></html>';
 }

@@ -72,3 +72,23 @@ và không có mức phụ thu ẩn trong PHP.
 6. Đơn `BANK` chưa `PAID` không được xác nhận/giao hàng. Đơn `PENDING` quá 24 giờ chưa thanh toán và không có báo cáo đang chờ có thể **hủy thủ công** trong Admin và hoàn lại số lượng kho. Không có job tự chạy hay auto-refund.
 7. Luôn **backup database** rồi import lại chỉ file `banhang.sql` mới để tạo các cột đối soát và bảng sự kiện trước khi kéo code PHP. Không cần API MB Bank, webhook hoặc OTP.
 8. Nút khách báo, ảnh chụp giao dịch và QR chỉ là thông tin; không phải bằng chứng ngân hàng đã nhận tiền. Nếu tiền đến sau khi đơn đã hủy thì liên hệ và xử lý hoàn tiền/thỏa thuận lại bằng tay.
+
+## Trung tâm thông báo, Timeline đơn hàng & Admin nâng cao
+
+- **Trung tâm thông báo (`tbl_notifications`):** Chuông thông báo + badge số chưa đọc trên header, dropdown xem nhanh, trang `index.php?page=notifications` đầy đủ, đánh dấu đã đọc và điều hướng thẳng tới đơn hàng. Thông báo được lưu trong MySQL nên vẫn còn khi đăng xuất/đăng nhập lại và chỉ hiển thị đúng tài khoản sở hữu.
+- **Cập nhật gần thời gian thực (`api.php`):** Polling nhẹ mỗi 20 giây cho thông báo khách hàng, trạng thái đơn hàng đang xem và số đơn chờ đối soát trên Admin. Tự động tạm dừng khi tab ẩn (`visibilitychange`) và giới hạn tần suất theo phiên.
+- **Timeline & lịch sử đơn hàng (`tbl_order_status_history`):** Hỗ trợ đầy đủ `Đã đặt hàng` → `Đã xác nhận` → `Đang chuẩn bị hàng` → `Đang giao hàng` → `Đã giao thành công` (và `Đã hủy` kèm lý do). Chỉ đánh dấu các bước thực sự đã xảy ra. Hỗ trợ lưu đơn vị vận chuyển, mã vận đơn thực tế, ghi chú nội bộ Admin và ghi chú gửi khách.
+- **Phân tách doanh thu & COD:** Doanh thu thực nhận chỉ tính các đơn có `payment_status = 'PAID'` (đã đối soát BANK hoặc đã xác nhận thu tiền COD); không bao giờ tính đơn BANK `UNPAID` thành tiền đã nhận. Đơn COD có nút xác nhận thu tiền riêng khi đang giao/đã giao.
+- **Email SMTP tùy chọn (`mailer.php`, `tbl_email_outbox`):** Cấu hình qua biến môi trường hoặc `admin/config/config.local.php` (xem mẫu `admin/config/config.local.example.php`). Dùng hàng đợi outbox gửi ngoài transaction DB; nếu chưa cấu hình SMTP, website và thông báo trên web vẫn hoạt động bình thường và không báo sai là đã gửi email.
+
+## Hướng dẫn cập nhật XAMPP không mất dữ liệu
+
+1. Mở `phpMyAdmin`, chọn database `web_mysqli` → tab **Export** để sao lưu toàn bộ dữ liệu hiện tại ra file `.sql` riêng.
+2. Tại `web_mysqli` → tab **Import**, nhập duy nhất file **`banhang.sql`** (tương thích MariaDB 10.4+ / MySQL 8.0, chạy lại an toàn, không DROP/TRUNCATE dữ liệu cũ).
+3. Cập nhật source code:
+   ```powershell
+   cd C:\xampp\htdocs\web_banhang
+   git switch main
+   git pull origin main
+   ```
+4. (Tùy chọn) Nếu muốn bật gửi email SMTP, sao chép `admin/config/config.local.example.php` thành `admin/config/config.local.php` và điền thông tin `SMTP_*` (file này đã nằm trong `.gitignore`, không đẩy lên GitHub).

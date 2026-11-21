@@ -211,7 +211,7 @@ PREPARE bh_idx FROM @bh_index_sql; EXECUTE bh_idx; DEALLOCATE PREPARE bh_idx;
 CREATE TABLE IF NOT EXISTS tbl_payment_events (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   order_id BIGINT UNSIGNED NOT NULL,
-  event_type ENUM('CUSTOMER_REPORTED','ADMIN_CONFIRMED','ADMIN_REJECTED','ADMIN_EXPIRED') NOT NULL,
+  event_type ENUM('CUSTOMER_REPORTED','ADMIN_CONFIRMED','ADMIN_REJECTED','ADMIN_EXPIRED','ADMIN_COD_PAID') NOT NULL,
   actor_type ENUM('CUSTOMER','ADMIN') NOT NULL,
   actor_id INT NOT NULL,
   detail VARCHAR(500) NOT NULL DEFAULT '',
@@ -221,8 +221,136 @@ CREATE TABLE IF NOT EXISTS tbl_payment_events (
   CONSTRAINT fk_banhang_payment_events_order FOREIGN KEY (order_id) REFERENCES tbl_orders(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Extend tbl_payment_events.event_type safely for explicit COD cash confirmation.
+SET @bh_pe_has_cod=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_payment_events' AND COLUMN_NAME='event_type' AND COLUMN_TYPE LIKE '%ADMIN_COD_PAID%');
+SET @bh_pe_sql=IF(@bh_pe_has_cod=0,
+  'ALTER TABLE tbl_payment_events MODIFY COLUMN event_type ENUM(''CUSTOMER_REPORTED'',''ADMIN_CONFIRMED'',''ADMIN_REJECTED'',''ADMIN_EXPIRED'',''ADMIN_COD_PAID'') NOT NULL',
+  'SELECT 1');
+PREPARE bh_pe FROM @bh_pe_sql; EXECUTE bh_pe; DEALLOCATE PREPARE bh_pe;
+
+-- Order workflow & fulfillment upgrades (idempotent, preserves all existing rows and statuses).
+SET @bh_has_preparing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND COLUMN_NAME='order_status' AND COLUMN_TYPE LIKE '%PREPARING%');
+SET @bh_order_enum_sql=IF(@bh_has_preparing=0,
+  'ALTER TABLE tbl_orders MODIFY COLUMN order_status ENUM(''PENDING'',''CONFIRMED'',''PREPARING'',''SHIPPING'',''COMPLETED'',''CANCELLED'') NOT NULL DEFAULT ''PENDING''',
+  'SELECT 1');
+PREPARE bh_enum FROM @bh_order_enum_sql; EXECUTE bh_enum; DEALLOCATE PREPARE bh_enum;
+
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND COLUMN_NAME='admin_note');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_orders ADD COLUMN admin_note VARCHAR(500) NOT NULL DEFAULT ''''','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND COLUMN_NAME='customer_note');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_orders ADD COLUMN customer_note VARCHAR(500) NOT NULL DEFAULT ''''','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND COLUMN_NAME='shipping_carrier');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_orders ADD COLUMN shipping_carrier VARCHAR(100) NOT NULL DEFAULT ''''','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND COLUMN_NAME='tracking_code');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_orders ADD COLUMN tracking_code VARCHAR(100) NOT NULL DEFAULT ''''','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND COLUMN_NAME='shipped_at');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_orders ADD COLUMN shipped_at DATETIME NULL','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND COLUMN_NAME='delivered_at');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_orders ADD COLUMN delivered_at DATETIME NULL','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND COLUMN_NAME='cancel_reason');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_orders ADD COLUMN cancel_reason VARCHAR(300) NOT NULL DEFAULT ''''','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND COLUMN_NAME='cod_paid_at');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_orders ADD COLUMN cod_paid_at DATETIME NULL','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+
+SET @bh_missing=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND COLUMN_NAME='cod_verified_by');
+SET @bh_add_col=IF(@bh_missing=0,'ALTER TABLE tbl_orders ADD COLUMN cod_verified_by INT NULL','SELECT 1');
+PREPARE bh_alter FROM @bh_add_col; EXECUTE bh_alter; DEALLOCATE PREPARE bh_alter;
+
+SET @bh_index_exists=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+  WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND INDEX_NAME='idx_review_created');
+SET @bh_index_sql=IF(@bh_index_exists=0,
+  'ALTER TABLE tbl_orders ADD INDEX idx_review_created (payment_method,payment_review_status,created_at)','SELECT 1');
+PREPARE bh_idx FROM @bh_index_sql; EXECUTE bh_idx; DEALLOCATE PREPARE bh_idx;
+
+SET @bh_index_exists=(SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+  WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tbl_orders' AND INDEX_NAME='idx_orders_phone');
+SET @bh_index_sql=IF(@bh_index_exists=0,
+  'ALTER TABLE tbl_orders ADD INDEX idx_orders_phone (phone)','SELECT 1');
+PREPARE bh_idx FROM @bh_index_sql; EXECUTE bh_idx; DEALLOCATE PREPARE bh_idx;
+
+-- Customer notification center.
+CREATE TABLE IF NOT EXISTS tbl_notifications (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  order_id BIGINT UNSIGNED NULL,
+  notification_type VARCHAR(40) NOT NULL,
+  dedup_key VARCHAR(120) NULL,
+  title VARCHAR(180) NOT NULL,
+  message VARCHAR(600) NOT NULL,
+  link_url VARCHAR(255) NOT NULL DEFAULT '',
+  is_read TINYINT(1) NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  read_at DATETIME NULL,
+  UNIQUE KEY uniq_notif_dedup (dedup_key),
+  INDEX idx_user_read_created (user_id,is_read,created_at),
+  INDEX idx_user_id_desc (user_id,id),
+  CONSTRAINT fk_banhang_notif_order FOREIGN KEY (order_id) REFERENCES tbl_orders(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Order status change history for accurate customer timeline and admin audit.
+CREATE TABLE IF NOT EXISTS tbl_order_status_history (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  order_id BIGINT UNSIGNED NOT NULL,
+  from_status VARCHAR(30) NULL,
+  to_status VARCHAR(30) NOT NULL,
+  actor_type ENUM('CUSTOMER','ADMIN','SYSTEM') NOT NULL DEFAULT 'ADMIN',
+  actor_id INT NOT NULL DEFAULT 0,
+  note VARCHAR(500) NOT NULL DEFAULT '',
+  is_public TINYINT(1) NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_history_order_time (order_id,created_at),
+  CONSTRAINT fk_banhang_history_order FOREIGN KEY (order_id) REFERENCES tbl_orders(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Backfill initial status row for existing orders that do not have history yet.
+INSERT INTO tbl_order_status_history (order_id,from_status,to_status,actor_type,actor_id,note,is_public,created_at)
+SELECT o.id, NULL, o.order_status, 'SYSTEM', 0, 'Khởi tạo lịch sử trạng thái từ dữ liệu hiện có.', 1, o.created_at
+FROM tbl_orders o
+WHERE NOT EXISTS (SELECT 1 FROM tbl_order_status_history h WHERE h.order_id = o.id);
+
+-- Optional SMTP email outbox (never blocks order transactions when SMTP is unconfigured).
+CREATE TABLE IF NOT EXISTS tbl_email_outbox (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  order_id BIGINT UNSIGNED NULL,
+  user_id INT NULL,
+  recipient_email VARCHAR(160) NOT NULL,
+  event_type VARCHAR(40) NOT NULL,
+  dedup_key VARCHAR(120) NULL,
+  subject VARCHAR(200) NOT NULL,
+  body_html MEDIUMTEXT NOT NULL,
+  body_text TEXT NOT NULL,
+  status ENUM('PENDING','SENT','FAILED','SKIPPED') NOT NULL DEFAULT 'PENDING',
+  attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  last_error VARCHAR(500) NOT NULL DEFAULT '',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  sent_at DATETIME NULL,
+  UNIQUE KEY uniq_email_dedup (dedup_key),
+  INDEX idx_outbox_status_created (status,created_at),
+  CONSTRAINT fk_banhang_outbox_order FOREIGN KEY (order_id) REFERENCES tbl_orders(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SELECT 'tbl_sanpham' AS bang,COUNT(*) AS so_dong FROM tbl_sanpham
 UNION ALL SELECT 'tbl_orders',COUNT(*) FROM tbl_orders
 UNION ALL SELECT 'tbl_order_items',COUNT(*) FROM tbl_order_items
-UNION ALL SELECT 'tbl_product_variants',COUNT(*) FROM tbl_product_variants;
+UNION ALL SELECT 'tbl_product_variants',COUNT(*) FROM tbl_product_variants
+UNION ALL SELECT 'tbl_notifications',COUNT(*) FROM tbl_notifications
+UNION ALL SELECT 'tbl_order_status_history',COUNT(*) FROM tbl_order_status_history
+UNION ALL SELECT 'tbl_email_outbox',COUNT(*) FROM tbl_email_outbox;
 SELECT setting_key,setting_value FROM tbl_settings WHERE setting_key IN ('bank_id','bank_account');

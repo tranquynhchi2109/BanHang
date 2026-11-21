@@ -7,4 +7,14 @@ return [
     'DB_NAME' => 'web_mysqli',
     'DB_USER' => 'root',
     'DB_PASS' => '',
+
+    // Optional SMTP configuration for email outbox (leave SMTP_HOST empty to disable email sending).
+    // Never commit real SMTP credentials to GitHub.
+    'SMTP_HOST' => '',
+    'SMTP_PORT' => '587',
+    'SMTP_SECURE' => 'tls', // tls | ssl | none
+    'SMTP_USER' => '',
+    'SMTP_PASS' => '',
+    'SMTP_FROM_EMAIL' => '',
+    'SMTP_FROM_NAME' => 'BanHang Tech Store',
 ];

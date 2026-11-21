@@ -14,7 +14,7 @@ $legacyRoutes = [
 $page = (string)($_GET['page'] ?? ($legacyRoutes[$legacyPage] ?? 'home'));
 if ($legacyPage === 'danhmucsanpham' && isset($_GET['id'])) $_GET['category_id'] = (int)$_GET['id'];
 if ($legacyPage === 'timkiem') $_GET['q'] = (string)($_POST['tukhoa'] ?? $_GET['q'] ?? '');
-$known = ['home','products','product','cart','checkout','login','register','account','password','orders','order','news','article','recommendations','contact','legacy_order'];
+$known = ['home','products','product','cart','checkout','login','register','account','password','orders','order','notifications','news','article','recommendations','contact','legacy_order'];
 if (!in_array($page,$known,true)) $page='home';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['timkiem'])) {
@@ -31,7 +31,7 @@ try {
                 $p=row('SELECT p.id_sanpham,p.giasp,p.soluong,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.id_sanpham=? AND p.tinhtrang=1',[$id]);
                 if (!$p || (int)$p['soluong']<1) throw new DomainException('Sản phẩm đã hết hàng.');
                 $variant=strtoupper(trim((string)($_POST['variant']??'BASE')));
-                if ($p['tendanhmuc']==='Điện thoại' && !in_array($variant,['128GB','256GB','512GB','1TB'],true)) {
+                if (is_phone_product($p) && !in_array($variant,['128GB','256GB','512GB','1TB'],true)) {
                     throw new DomainException('Vui lòng chọn dung lượng hợp lệ.');
                 }
                 if (!is_phone_product($p)) $variant='BASE';
@@ -117,6 +117,16 @@ try {
                 $_SESSION['csrf']=bin2hex(random_bytes(32));
                 notice('Đổi mật khẩu thành công.','success');
                 redirect_to(link_to('account'));
+            case 'mark_notif_read':
+                $user=require_customer();
+                $nid=as_int($_POST['id']??0,1,2147483647);
+                mark_notification_read((int)$user['id_dangky'],$nid);
+                redirect_to(link_to('notifications'));
+            case 'mark_all_notif_read':
+                $user=require_customer();
+                mark_all_notifications_read((int)$user['id_dangky']);
+                notice('Đã đánh dấu tất cả thông báo là đã đọc.','success');
+                redirect_to(link_to('notifications'));
             case 'report_bank_transfer':
                 $user=require_customer();
                 $code=trim((string)($_POST['order_code']??''));
@@ -199,11 +209,31 @@ try {
                             [$quantity,$id,$quantity]);
                         if ($changed!==1) throw new RuntimeException('Không thể cập nhật kho.');
                     }
+                    $orderLink = link_to('order',['code'=>$code]);
+                    $initNote = $payment === 'BANK'
+                        ? 'Đơn hàng chuyển khoản VietQR đã được tạo, đang chờ khách chuyển khoản và cửa hàng đối soát.'
+                        : 'Đơn hàng thanh toán khi nhận hàng (COD) đã được tạo, đang chờ cửa hàng xác nhận.';
+                    record_order_history($orderId, null, 'PENDING', 'CUSTOMER', (int)$user['id_dangky'], $initNote, true);
+                    create_notification(
+                        (int)$user['id_dangky'],
+                        $orderId,
+                        'ORDER_CREATED',
+                        'Đặt hàng thành công!',
+                        "Đơn hàng {$code} với tổng giá trị " . money($total) . " (" . payment_method_label($payment) . ") đã được ghi nhận."
+                        . ($payment === 'BANK' ? ' Vui lòng chuyển khoản đúng nội dung để cửa hàng đối soát.' : ' Cửa hàng sẽ sớm xác nhận và chuẩn bị hàng.'),
+                        $orderLink,
+                        "order_created:{$orderId}"
+                    );
+                    $createdOrder = row('SELECT * FROM tbl_orders WHERE id=?', [$orderId]);
+                    if ($createdOrder) {
+                        queue_order_email($createdOrder, 'ORDER_CREATED', $initNote, "email_created:{$orderId}");
+                    }
                     db()->commit();
                 } catch (Throwable $e) {
                     if (db()->inTransaction()) db()->rollBack();
                     throw $e;
                 }
+                dispatch_email_outbox(5);
                 unset($_SESSION['cart']);
                 notice('Đơn hàng đã được ghi nhận.','success');
                 redirect_to(link_to('order',['code'=>$code]));

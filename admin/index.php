@@ -3,7 +3,7 @@ declare(strict_types=1);
 require dirname(__DIR__) . '/app.php';
 migrate_legacy_session();
 $page=(string)($_GET['page']??'dashboard');
-$pages=['login','dashboard','products','product_form','categories','orders','order','customers','payments','inventory','revenue','recommendations','news','article_form','settings','legacy_orders','legacy_order'];
+$pages=['login','dashboard','products','product_form','categories','orders','order','customers','customer','payments','inventory','revenue','recommendations','news','article_form','settings','legacy_orders','legacy_order'];
 if (!in_array($page,$pages,true)) $page='dashboard';
 
 function save_product_upload(?string $previous): string
@@ -42,6 +42,7 @@ function save_news_upload(?string $previous): string
     if (!move_uploaded_file($tmp,$folder.'/'.$filename)) throw new RuntimeException('Không thể ghi ảnh bài viết.');
     return $filename;
 }
+
 try {
     if ($_SERVER['REQUEST_METHOD']==='POST') {
         ensure_post();
@@ -59,7 +60,8 @@ try {
             notice('Đã đăng xuất.','success');
             redirect_to(admin_to('login'));
         }
-        require_admin();
+        $adminUser = require_admin();
+        $adminId = (int)$adminUser['id_admin'];
         switch ($action) {
             case 'save_product':
                 $id=as_int($_POST['id']??0,0,2147483647);
@@ -98,7 +100,6 @@ try {
                         $id=(int)db()->lastInsertId();
                     }
                     if ($isPhone) {
-                        // The catalog price is the approved 128GB price.
                         run('INSERT INTO tbl_product_variants(product_id,variant_code,price,is_active) VALUES (?,?,?,1)
                              ON DUPLICATE KEY UPDATE price=VALUES(price),is_active=1',[$id,'128GB',$price]);
                         foreach ($capacityPrices as $capacity=>$capacityPrice) {
@@ -142,57 +143,57 @@ try {
             case 'order_status':
                 $id=as_int($_POST['id']??0);
                 $next=(string)($_POST['status']??'');
-                db()->beginTransaction();
-                try {
-                    $order=row('SELECT id,order_status,payment_status,payment_method,payment_review_status FROM tbl_orders WHERE id=? FOR UPDATE',[$id]);
-                    if (!$order) throw new DomainException('Không tìm thấy đơn hàng.');
-                    $transitions=[
-                        'PENDING'=>['CONFIRMED','CANCELLED'],
-                        'CONFIRMED'=>['SHIPPING','CANCELLED'],
-                        'SHIPPING'=>['COMPLETED'],
-                        'COMPLETED'=>[],
-                        'CANCELLED'=>[],
-                    ];
-                    if (!in_array($next,$transitions[$order['order_status']]??[],true)) throw new DomainException('Chuyển trạng thái đơn hàng không được phép.');
-                    if ($order['payment_method']==='BANK' && $order['payment_status']!=='PAID' && in_array($next,['CONFIRMED','SHIPPING','COMPLETED'],true))
-                        throw new DomainException('Đơn BANK phải được xác nhận đã nhận tiền trước khi xác nhận/giao hàng.');
-                    if ($next==='CANCELLED') {
-                        if ($order['payment_status']==='PAID') throw new DomainException('Đơn đã thanh toán cần xử lý hoàn tiền thủ công trước khi hủy.');
-                        if ($order['payment_review_status']==='REPORTED') throw new DomainException('Khách đã báo chuyển tiền. Phải đối soát trước khi hủy.');
-                        $items=rows('SELECT product_id,quantity FROM tbl_order_items WHERE order_id=?',[$id]);
-                        foreach ($items as $item) {
-                            run('UPDATE tbl_sanpham SET soluong=soluong+? WHERE id_sanpham=?',[(int)$item['quantity'],(int)$item['product_id']]);
-                        }
-                    }
-                    run('UPDATE tbl_orders SET order_status=? WHERE id=?',[$next,$id]);
-                    db()->commit();
-                } catch (Throwable $e) {
-                    if (db()->inTransaction()) db()->rollBack();
-                    throw $e;
-                }
-                notice('Đã cập nhật trạng thái đơn hàng.','success');
+                update_order_status($id,$adminId,$next,[
+                    'shipping_carrier'=>(string)($_POST['shipping_carrier']??''),
+                    'tracking_code'=>(string)($_POST['tracking_code']??''),
+                    'admin_note'=>(string)($_POST['admin_note']??''),
+                    'customer_note'=>(string)($_POST['customer_note']??''),
+                    'cancel_reason'=>(string)($_POST['cancel_reason']??''),
+                ]);
+                notice('Đã cập nhật trạng thái đơn hàng thành "'.order_status_label($next).'" và gửi thông báo tới khách hàng.','success');
+                redirect_to(admin_to('order',['id'=>$id]));
+            case 'save_order_notes':
+                $id=as_int($_POST['id']??0);
+                save_order_notes($id,$adminId,$_POST);
+                notice('Đã lưu ghi chú và thông tin vận chuyển.','success');
                 redirect_to(admin_to('order',['id'=>$id]));
             case 'mark_paid':
-                $adminUser=require_admin();
                 if ((string)($_POST['verified_receipt']??'')!=='1')
                     throw new DomainException('Bạn phải xác nhận đã kiểm tra giao dịch tiền vào trên MB Bank.');
                 $id=as_int($_POST['id']??0);
                 $amount=as_int($_POST['received_amount']??0,1,1000000000000);
-                confirm_bank_transfer($id,(int)$adminUser['id_admin'],(string)($_POST['bank_reference']??''),$amount);
-                notice('Đã xác nhận nhận đủ tiền qua MB Bank. Nhật ký đối soát đã lưu.','success');
+                confirm_bank_transfer($id,$adminId,(string)($_POST['bank_reference']??''),$amount);
+                notice('Đã xác nhận nhận đủ tiền qua MB Bank, ghi nhật ký đối soát và gửi thông báo thanh toán thành công tới khách hàng.','success');
+                redirect_to(admin_to('order',['id'=>$id]));
+            case 'confirm_cod_paid':
+                $id=as_int($_POST['id']??0);
+                confirm_cod_payment($id,$adminId,(string)($_POST['cod_note']??''));
+                notice('Đã xác nhận thu đủ tiền thanh toán COD cho đơn hàng.','success');
                 redirect_to(admin_to('order',['id'=>$id]));
             case 'reject_bank_report':
-                $adminUser=require_admin();
                 $id=as_int($_POST['id']??0);
-                reject_bank_report($id,(int)$adminUser['id_admin'],(string)($_POST['reason']??''));
-                notice('Đã báo cần đối soát lại. Đơn hàng vẫn UNPAID.','success');
+                reject_bank_report($id,$adminId,(string)($_POST['reason']??''));
+                notice('Đã báo cần đối soát lại và gửi thông báo tới khách hàng. Đơn hàng vẫn ở trạng thái chưa thanh toán.','success');
                 redirect_to(admin_to('order',['id'=>$id]));
             case 'expire_unpaid':
-                $adminUser=require_admin();
                 $id=as_int($_POST['id']??0);
-                expire_unpaid_bank_order($id,(int)$adminUser['id_admin']);
-                notice('Đã hủy thủ công đơn BANK quá 24 giờ và hoàn tồn kho.','success');
+                expire_unpaid_bank_order($id,$adminId);
+                notice('Đã hủy thủ công đơn BANK quá 24 giờ, hoàn tồn kho và thông báo cho khách hàng.','success');
                 redirect_to(admin_to('order',['id'=>$id]));
+            case 'send_customer_notification':
+                $customerId=as_int($_POST['customer_id']??0,1,2147483647);
+                $orderId=as_int($_POST['order_id']??0,1,2147483647);
+                admin_send_order_notification($customerId,$orderId,$adminId,(string)($_POST['title']??''),(string)($_POST['message']??''));
+                notice('Đã gửi thông báo tới khách hàng.','success');
+                redirect_to(admin_to('customer',['id'=>$customerId]));
+            case 'retry_email_outbox':
+                $stats=dispatch_email_outbox(10);
+                if (!smtp_is_configured()) {
+                    notice('SMTP chưa được cấu hình nên không thể gửi email. Các thông báo trên website vẫn hoạt động bình thường.','info');
+                } else {
+                    notice("Kết quả xử lý hàng đợi email: đã gửi {$stats['sent']}, thất bại {$stats['failed']}, bỏ qua {$stats['skipped']}.",$stats['failed']>0?'danger':'success');
+                }
+                redirect_to(admin_to('settings'));
             case 'save_settings':
                 $values=[
                     'store_name'=>trim((string)($_POST['store_name']??'')),
@@ -238,9 +239,26 @@ try {
     }
 } catch (DomainException $e) {
     notice($e->getMessage(),'danger');
-    $target=match((string)($_POST['action']??'')) {
+    $act=(string)($_POST['action']??'');
+    $postedId=filter_var($_POST['id']??0,FILTER_VALIDATE_INT);
+    $postedCustomerId=filter_var($_POST['customer_id']??0,FILTER_VALIDATE_INT);
+    if (in_array($act,['order_status','save_order_notes','mark_paid','reject_bank_report','expire_unpaid','confirm_cod_paid'],true) && $postedId && $postedId>0) {
+        redirect_to(admin_to('order',['id'=>(int)$postedId]));
+    }
+    if ($act==='send_customer_notification' && $postedCustomerId && $postedCustomerId>0) {
+        redirect_to(admin_to('customer',['id'=>(int)$postedCustomerId]));
+    }
+    if ($act==='save_product' && $postedId && $postedId>0) {
+        redirect_to(admin_to('product_form',['id'=>(int)$postedId]));
+    }
+    if ($act==='save_article' && $postedId && $postedId>0) {
+        redirect_to(admin_to('article_form',['id'=>(int)$postedId]));
+    }
+    $target=match($act) {
         'login_admin'=>'login','save_product'=>'product_form','save_category'=>'categories',
-        'order_status','mark_paid','reject_bank_report','expire_unpaid'=>'orders','legacy_order_seen'=>'legacy_order','save_settings'=>'settings','save_article'=>'article_form',
+        'order_status','save_order_notes','mark_paid','reject_bank_report','expire_unpaid','confirm_cod_paid'=>'orders',
+        'legacy_order_seen'=>'legacy_orders','send_customer_notification'=>'customers',
+        'save_settings','retry_email_outbox'=>'settings','save_article'=>'article_form',
         default=>'dashboard'
     };
     redirect_to(admin_to($target));
@@ -254,27 +272,41 @@ function admin_page_head(string $title): void
 {
     page_head($title,true);
     $admin=require_admin();
+    $pendingRec=admin_pending_reconciliation_count();
+    $pendingOrd=(int)(row("SELECT COUNT(*) AS n FROM tbl_orders WHERE order_status='PENDING'")['n']??0);
     $nav=[
-        'dashboard'=>['◈','Tổng quan'],
-        'products'=>['▣','Sản phẩm'],
-        'categories'=>['▦','Danh mục'],
-        'orders'=>['♧','Đơn hàng'],
-        'legacy_orders'=>['▤','Đơn hàng cũ'],
-        'customers'=>['♙','Khách hàng'],
-        'payments'=>['▤','Thanh toán'],
-        'inventory'=>['◫','Kho hàng'],
-        'revenue'=>['▥','Doanh thu'],
-        'recommendations'=>['◇','Gợi ý sản phẩm'],
-        'news'=>['▧','Tin tức'],
-        'settings'=>['⚙','Cấu hình'],
+        'dashboard'=>['◈','Tổng quan',0,''],
+        'orders'=>['♧','Đơn hàng',$pendingOrd,'data-admin-pending-orders'],
+        'payments'=>['▤','Thanh toán',$pendingRec,'data-admin-pending-rec'],
+        'customers'=>['♙','Khách hàng',0,''],
+        'products'=>['▣','Sản phẩm',0,''],
+        'categories'=>['▦','Danh mục',0,''],
+        'inventory'=>['◫','Kho hàng',0,''],
+        'revenue'=>['▥','Doanh thu',0,''],
+        'legacy_orders'=>['▤','Đơn hàng cũ',0,''],
+        'recommendations'=>['◇','Gợi ý sản phẩm',0,''],
+        'news'=>['▧','Tin tức',0,''],
+        'settings'=>['⚙','Cấu hình',0,''],
     ];
-    echo '<div class="admin-shell"><aside class="admin-sidebar" id="admin-sidebar"><a class="admin-brand" href="'.admin_to('dashboard').'"><span class="brand__mark">B</span> BANHANG <small>MANAGEMENT CONSOLE</small></a><p class="admin-caption">WORKSPACE</p>';
+    echo '<div class="admin-shell" data-admin-shell="1"><aside class="admin-sidebar" id="admin-sidebar"><a class="admin-brand" href="'.admin_to('dashboard').'"><span class="brand__mark">B</span> BANHANG <small>MANAGEMENT CONSOLE</small></a><p class="admin-caption">WORKSPACE</p>';
     $current=(string)($_GET['page']??'dashboard');
+    if ($current==='order') $current='orders';
+    if ($current==='customer') $current='customers';
+    if ($current==='product_form') $current='products';
+    if ($current==='article_form') $current='news';
+    if ($current==='legacy_order') $current='legacy_orders';
     foreach ($nav as $key=>$entry) {
-        echo '<a class="'.($current===$key?'active':'').'" href="'.admin_to($key).'"><span>'.h($entry[0]).'</span>'.h($entry[1]).'</a>';
+        $badgeHtml='';
+        if ($entry[3]!=='') {
+            $badgeHtml='<span class="nav-pill'.($entry[2]>0?'':' is-hidden').'" '.$entry[3].'>'.(int)$entry[2].'</span>';
+        }
+        echo '<a class="'.($current===$key?'active':'').'" href="'.admin_to($key).'"><span>'.h($entry[0]).'</span><em>'.h($entry[1]).'</em>'.$badgeHtml.'</a>';
     }
     echo '<hr><a href="' . h(project_url('index.php')) . '">↗ Xem cửa hàng</a>';
-    echo '</aside><div class="admin-body"><header class="admin-topbar"><button type="button" class="mobile-toggle" data-menu-toggle>☰</button><strong>BanHang Management</strong><div class="admin-profile">Quản trị viên: '.h($admin['username']);
+    echo '</aside><div class="admin-body"><header class="admin-topbar"><div class="admin-topbar__left"><button type="button" class="mobile-toggle" data-menu-toggle>☰</button><strong>BanHang Management</strong></div>';
+    echo '<div class="admin-profile">';
+    echo '<a class="topbar-alert'.($pendingRec>0?'':' is-hidden').'" href="'.admin_to('payments',['review'=>'REPORTED']).'" data-admin-alert-pill>🔔 Chờ đối soát: <strong data-admin-pending-rec-text>'.$pendingRec.'</strong></a>';
+    echo '<span>Quản trị viên: '.h($admin['username']).'</span>';
     echo '<form method="post">'.csrf_field().'<input type="hidden" name="action" value="logout_admin"><button class="button button--light" type="submit">Đăng xuất</button></form></div></header><main class="admin-content">';
     echo '<div class="flash">';notices_html();echo '</div>';
 }
@@ -294,10 +326,65 @@ function admin_table_start(array $headers): void
     echo '</tr></thead><tbody>';
 }
 function admin_table_end(): void {echo '</tbody></table></div>';}
-function stat_card(string $label,string $value,string $note=''): void
+function stat_card(string $label,string $value,string $note='',string $tone=''): void
 {
-    echo '<article class="stat-card surface"><p>'.h($label).'</p><strong>'.h($value).'</strong><span>'.h($note).'</span></article>';
+    echo '<article class="stat-card surface'.($tone!==''?' stat-card--'.h($tone):'').'"><p>'.h($label).'</p><strong>'.h($value).'</strong><span>'.h($note).'</span></article>';
 }
+function render_revenue_chart(string $range, string $pageTarget): void
+{
+    $range = in_array($range, ['7d','30d','12m'], true) ? $range : '30d';
+    echo '<div class="chart-head"><h2>Biểu đồ doanh thu</h2><div class="filter-tabs">';
+    foreach (['7d'=>'7 ngày qua','30d'=>'30 ngày qua','12m'=>'12 tháng qua'] as $k=>$label) {
+        echo '<a class="'.($range===$k?'active':'').'" href="'.admin_to($pageTarget,['range'=>$k]).'">'.h($label).'</a>';
+    }
+    echo '</div></div>';
+    if ($range==='12m') {
+        $series = rows(
+            "SELECT DATE_FORMAT(created_at,'%Y-%m') AS bucket,
+                    COUNT(*) AS order_count,
+                    COALESCE(SUM(CASE WHEN order_status<>'CANCELLED' THEN total_amount ELSE 0 END),0) AS gross_total,
+                    COALESCE(SUM(CASE WHEN payment_status='PAID' THEN total_amount ELSE 0 END),0) AS paid_total
+             FROM tbl_orders
+             WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+             GROUP BY DATE_FORMAT(created_at,'%Y-%m')
+             ORDER BY bucket ASC"
+        );
+    } else {
+        $days = $range==='7d' ? 7 : 30;
+        $series = rows(
+            "SELECT DATE_FORMAT(created_at,'%Y-%m-%d') AS bucket,
+                    COUNT(*) AS order_count,
+                    COALESCE(SUM(CASE WHEN order_status<>'CANCELLED' THEN total_amount ELSE 0 END),0) AS gross_total,
+                    COALESCE(SUM(CASE WHEN payment_status='PAID' THEN total_amount ELSE 0 END),0) AS paid_total
+             FROM tbl_orders
+             WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL {$days} DAY)
+             GROUP BY DATE_FORMAT(created_at,'%Y-%m-%d')
+             ORDER BY bucket ASC"
+        );
+    }
+    if (!$series) {
+        echo '<p class="hint">Chưa có dữ liệu đơn hàng trong khoảng thời gian này.</p>';
+        return;
+    }
+    $maxVal = 1;
+    foreach ($series as $rowItem) {
+        $maxVal = max($maxVal, (int)$rowItem['gross_total'], (int)$rowItem['paid_total']);
+    }
+    echo '<div class="chart-legend"><span><i class="legend-dot legend-dot--paid"></i> Tiền thực nhận (Đã xác nhận PAID)</span><span><i class="legend-dot legend-dot--gross"></i> Giá trị đơn chưa hủy</span></div>';
+    echo '<div class="bar-chart">';
+    foreach ($series as $rowItem) {
+        $paidPct = round(((int)$rowItem['paid_total'] / $maxVal) * 100, 1);
+        $grossPct = round(((int)$rowItem['gross_total'] / $maxVal) * 100, 1);
+        $shortLabel = strlen((string)$rowItem['bucket']) === 10 ? substr((string)$rowItem['bucket'], 5) : (string)$rowItem['bucket'];
+        echo '<div class="bar-col" title="'.h($rowItem['bucket'].' · Thực nhận: '.money((int)$rowItem['paid_total']).' · Đơn chưa hủy: '.money((int)$rowItem['gross_total'])).'">';
+        echo '<div class="bar-pair">';
+        echo '<div class="bar-fill bar-fill--gross" style="height:'.max(2, $grossPct).'%"></div>';
+        echo '<div class="bar-fill bar-fill--paid" style="height:'.($rowItem['paid_total']>0?max(3,$paidPct):0).'%"></div>';
+        echo '</div><small>'.h($shortLabel).'</small></div>';
+    }
+    echo '</div>';
+}
+
 try {
 if ($page==='login' && current_admin()===null) {
     page_head('Đăng nhập quản trị',true);
@@ -312,27 +399,68 @@ if ($page==='login' && current_admin()===null) {
 }
 require_admin();
 admin_page_head('Quản trị BanHang');
+
 if ($page==='dashboard') {
-    $income=row("SELECT COALESCE(SUM(total_amount),0) AS total,COUNT(*) AS n FROM tbl_orders WHERE order_status<>'CANCELLED'");
-    $customers=row('SELECT COUNT(*) AS n FROM tbl_dangky');
-    $products=row('SELECT COUNT(*) AS n FROM tbl_sanpham');
-    $pending=row("SELECT COUNT(*) AS n FROM tbl_orders WHERE order_status='PENDING'");
-    admin_title('Tổng quan hệ thống','Số liệu cửa hàng và các đơn hàng mới nhất.');
-    echo '<div class="stats">';
-    stat_card('Doanh thu ghi nhận',money((int)($income['total']??0)),'Không tính đơn đã hủy');
-    stat_card('Đơn hàng mới',(string)($income['n']??0),'Đơn hàng đã ghi nhận');
-    stat_card('Khách hàng',(string)($customers['n']??0),'Tài khoản đang lưu');
-    stat_card('Sản phẩm',(string)($products['n']??0),'Tất cả trạng thái');
-    echo '</div><div class="admin-grid"><div class="surface"><h2>Đơn hàng gần đây</h2>';
-    admin_table_start(['Mã đơn','Khách','Giá trị','Trạng thái']);
-    foreach (rows('SELECT id,order_code,customer_name,total_amount,order_status FROM tbl_orders ORDER BY id DESC LIMIT 8') as $o) {
-        echo '<tr><td><a class="link-blue" href="'.admin_to('order',['id'=>$o['id']]).'">'.h($o['order_code']).'</a></td><td>'.h($o['customer_name']).'</td><td>'.money((int)$o['total_amount']).'</td><td><span class="badge">'.h($o['order_status']).'</span></td></tr>';
+    $kpi = row(
+        "SELECT COUNT(*) AS total_orders,
+                SUM(order_status='PENDING') AS pending_orders,
+                SUM(order_status='SHIPPING') AS shipping_orders,
+                SUM(order_status='COMPLETED') AS completed_orders,
+                SUM(payment_method='BANK' AND payment_review_status='REPORTED' AND payment_status='UNPAID' AND order_status<>'CANCELLED') AS pending_reconciliation,
+                COALESCE(SUM(CASE WHEN payment_status='PAID' THEN total_amount ELSE 0 END),0) AS paid_revenue,
+                COALESCE(SUM(CASE WHEN payment_status='PAID' AND payment_method='BANK' THEN total_amount ELSE 0 END),0) AS bank_paid_revenue,
+                COALESCE(SUM(CASE WHEN payment_status='PAID' AND payment_method='COD' THEN total_amount ELSE 0 END),0) AS cod_paid_revenue,
+                COALESCE(SUM(CASE WHEN payment_status='UNPAID' AND order_status<>'CANCELLED' THEN total_amount ELSE 0 END),0) AS unpaid_value,
+                COALESCE(SUM(CASE WHEN payment_status='UNPAID' AND payment_method='BANK' AND order_status<>'CANCELLED' THEN total_amount ELSE 0 END),0) AS bank_unpaid_value,
+                COALESCE(SUM(CASE WHEN payment_status='UNPAID' AND payment_method='COD' AND order_status<>'CANCELLED' THEN total_amount ELSE 0 END),0) AS cod_unpaid_value
+         FROM tbl_orders"
+    );
+    $lowStock=(int)(row('SELECT COUNT(*) AS n FROM tbl_sanpham WHERE soluong<=5')['n']??0);
+    $customersCount=(int)(row('SELECT COUNT(*) AS n FROM tbl_dangky')['n']??0);
+    $pendingRec=(int)($kpi['pending_reconciliation']??0);
+    admin_title('Tổng quan hệ thống','Theo dõi vận hành, đối soát thanh toán và doanh thu thực nhận.');
+    if ($pendingRec>0) {
+        echo '<div class="alert info admin-cta-banner"><span>🔔 Hiện có <strong>'.$pendingRec.'</strong> đơn chuyển khoản VietQR khách đã báo chuyển tiền và đang chờ Admin đối soát sao kê MB Bank.</span><a class="button" href="'.admin_to('payments',['review'=>'REPORTED']).'">Đối soát ngay →</a></div>';
+    }
+    echo '<div class="stats stats--dashboard">';
+    stat_card('Tổng số đơn hàng',(string)(int)($kpi['total_orders']??0),'Toàn bộ đơn ghi nhận');
+    stat_card('Đơn mới cần xử lý',(string)(int)($kpi['pending_orders']??0),'Trạng thái Đã đặt hàng','warning');
+    stat_card('Chờ đối soát CK',(string)$pendingRec,'Khách đã báo chuyển khoản MB Bank',$pendingRec>0?'danger':'');
+    stat_card('Đơn đang giao',(string)(int)($kpi['shipping_orders']??0),'Đã bàn giao vận chuyển','info');
+    stat_card('Đơn hoàn thành',(string)(int)($kpi['completed_orders']??0),'Đã giao thành công','success');
+    stat_card('Doanh thu thực nhận (PAID)',money((int)($kpi['paid_revenue']??0)),'BANK: '.money((int)($kpi['bank_paid_revenue']??0)).' · COD: '.money((int)($kpi['cod_paid_revenue']??0)),'success');
+    stat_card('Đơn đặt chưa thanh toán',money((int)($kpi['unpaid_value']??0)),'BANK chờ TT: '.money((int)($kpi['bank_unpaid_value']??0)).' · COD chưa thu: '.money((int)($kpi['cod_unpaid_value']??0)),'warning');
+    stat_card('Sản phẩm sắp hết hàng',(string)$lowStock,'Tồn kho ≤ 5 sản phẩm',$lowStock>0?'danger':'');
+    stat_card('Khách hàng',(string)$customersCount,'Tài khoản đã đăng ký');
+    echo '</div>';
+
+    $range=(string)($_GET['range']??'30d');
+    echo '<div class="surface chart-panel">';
+    render_revenue_chart($range,'dashboard');
+    echo '</div>';
+
+    echo '<div class="admin-grid admin-grid--spaced"><div class="surface"><h2>Đơn hàng gần đây</h2>';
+    admin_table_start(['Mã đơn','Khách hàng','Tổng tiền','Thanh toán','Trạng thái']);
+    foreach (rows('SELECT id,order_code,customer_name,total_amount,payment_method,payment_status,payment_review_status,order_status FROM tbl_orders ORDER BY id DESC LIMIT 10') as $o) {
+        $payState=payment_state_summary($o);
+        echo '<tr><td><a class="link-blue" href="'.admin_to('order',['id'=>$o['id']]).'">'.h($o['order_code']).'</a></td><td>'.h($o['customer_name']).'</td><td><strong>'.money((int)$o['total_amount']).'</strong></td>';
+        echo '<td><span class="status-pill status-pill--'.h($payState['tone']).'">'.h($payState['label']).'</span></td>';
+        echo '<td><span class="status-pill status-pill--'.h(order_status_tone((string)$o['order_status'])).'">'.h(order_status_label((string)$o['order_status'])).'</span></td></tr>';
     }
     admin_table_end();
-    echo '</div><div class="surface"><h2>Vận hành</h2><p class="metric-number">'.(int)($pending['n']??0).'</p><p>Đơn chờ xác nhận</p><a class="button" href="'.admin_to('orders').'">Xem đơn hàng →</a><hr><p>Các giao dịch VietQR phải được đối soát thủ công trước khi xác nhận thanh toán.</p></div></div>';
+    echo '</div><div class="surface"><h2>Hàng chờ đối soát MB Bank</h2>';
+    $recQueue=rows("SELECT id,order_code,customer_name,total_amount,payment_reported_at FROM tbl_orders WHERE payment_method='BANK' AND payment_review_status='REPORTED' AND payment_status='UNPAID' AND order_status<>'CANCELLED' ORDER BY payment_reported_at ASC LIMIT 8");
+    if (!$recQueue) {
+        echo '<p class="hint">Không có đơn nào đang chờ đối soát.</p>';
+    } else {
+        foreach ($recQueue as $rq) {
+            echo '<div class="queue-item"><div><a class="link-blue" href="'.admin_to('order',['id'=>$rq['id']]).'"><strong>'.h($rq['order_code']).'</strong></a><p>'.h($rq['customer_name']).' · '.money((int)$rq['total_amount']).'</p><small>Khách báo lúc: '.h((string)$rq['payment_reported_at']).'</small></div><a class="button button--light" href="'.admin_to('order',['id'=>$rq['id']]).'">Đối soát</a></div>';
+        }
+    }
+    echo '<hr><p class="hint">Lưu ý: Đơn BANK chưa xác nhận thanh toán KHÔNG được tính vào doanh thu thực nhận. Chỉ xác nhận PAID sau khi kiểm tra sao kê MB Bank.</p></div></div>';
 }
 elseif ($page==='products') {
-    admin_title('Quản lý sản phẩm','Danh sách tồn kho, giá bán và trạng thái hiển thị.',
+    admin_title('Quản lý sản phẩm','Danh sách sản phẩm thật, giá dung lượng SQL và tồn kho chia sẻ theo sản phẩm.',
         '<a class="button" href="'.admin_to('product_form').'">＋ Thêm sản phẩm</a>');
     $q=trim((string)($_GET['q']??''));
     $params=[];$filter='';
@@ -340,11 +468,20 @@ elseif ($page==='products') {
     $list=rows('SELECT p.id_sanpham,p.tensanpham,p.masp,p.giasp,p.soluong,p.tinhtrang,p.hinhanh,c.tendanhmuc
                 FROM tbl_sanpham p JOIN tbl_danhmuc c ON p.id_danhmuc=c.id_danhmuc '.$filter.' ORDER BY p.id_sanpham DESC LIMIT 100',$params);
     echo '<form method="get" class="admin-search"><input type="hidden" name="page" value="products"><input class="field" name="q" maxlength="80" value="'.h($q).'" placeholder="Tìm theo tên hoặc SKU"><button class="button">Tìm kiếm</button></form>';
-    admin_table_start(['Sản phẩm','SKU','Danh mục','Giá bán','Tồn kho','Trạng thái','Thao tác']);
+    admin_table_start(['Sản phẩm','SKU','Danh mục','Giá bán / Dung lượng','Tồn kho (dùng chung)','Trạng thái','Thao tác']);
     foreach ($list as $p) {
+        $priceHtml='<strong>'.money((int)$p['giasp']).'</strong>';
+        if (is_phone_product($p)) {
+            $vars=available_variants((int)$p['id_sanpham']);
+            if ($vars) {
+                $parts=[];
+                foreach ($vars as $vc=>$vp) $parts[]=$vc.': '.money($vp);
+                $priceHtml.='<div class="hint">'.h(implode(' · ',$parts)).'</div>';
+            }
+        }
         echo '<tr><td><div class="table-product"><img src="'.h(safe_image($p['hinhanh'])).'" alt=""><strong>'.h($p['tensanpham']).'</strong></div></td>';
-        echo '<td>'.h($p['masp']).'</td><td>'.h($p['tendanhmuc']).'</td><td>'.money((int)$p['giasp']).'</td><td>'.(int)$p['soluong'].'</td>';
-        echo '<td><span class="badge">'.((int)$p['tinhtrang']===1?'Đang bán':'Đã ẩn').'</span></td><td><a href="'.admin_to('product_form',['id'=>$p['id_sanpham']]).'" class="link-blue">Chỉnh sửa</a></td></tr>';
+        echo '<td>'.h($p['masp']).'</td><td>'.h($p['tendanhmuc']).'</td><td>'.$priceHtml.'</td><td>'.(int)$p['soluong'].'</td>';
+        echo '<td><span class="status-pill status-pill--'.((int)$p['tinhtrang']===1?'success':'neutral').'">'.((int)$p['tinhtrang']===1?'Đang bán':'Đã ẩn').'</span></td><td><a href="'.admin_to('product_form',['id'=>$p['id_sanpham']]).'" class="link-blue">Chỉnh sửa</a></td></tr>';
     }
     admin_table_end();
 }
@@ -352,7 +489,7 @@ elseif ($page==='product_form') {
     $id=as_int($_GET['id']??0,0,2147483647);
     $p=$id?row('SELECT * FROM tbl_sanpham WHERE id_sanpham=?',[$id]):[];
     if ($id && !$p) throw new DomainException('Không tìm thấy sản phẩm.');
-    admin_title($id?'Cập nhật sản phẩm':'Thêm sản phẩm','Chỉnh sửa nội dung và ảnh hiển thị. Tồn kho cập nhật theo số lượng thực.');
+    admin_title($id?'Cập nhật sản phẩm':'Thêm sản phẩm','Giá từng dung lượng đọc từ tbl_product_variants; tồn kho dùng chung tại tbl_sanpham.soluong.');
     echo '<form class="surface admin-form" method="post" enctype="multipart/form-data">'.csrf_field().'<input type="hidden" name="action" value="save_product"><input type="hidden" name="id" value="'.$id.'">';
     echo '<div class="form-grid"><div><label class="field-group">Tên sản phẩm <input class="field" name="name" maxlength="250" required value="'.h($p['tensanpham']??'').'"></label>';
     echo '<label class="field-group">Mã SKU <input class="field" name="sku" maxlength="100" required value="'.h($p['masp']??'').'"></label>';
@@ -366,12 +503,12 @@ elseif ($page==='product_form') {
     $dbVariants=$id?rows('SELECT variant_code,price FROM tbl_product_variants WHERE product_id=? AND is_active=1',[$id]):[];
     $variantValues=[];
     foreach ($dbVariants as $v) $variantValues[(string)$v['variant_code']]=(int)$v['price'];
-    echo '<div class="variant-admin"><h3>Giá từng dung lượng điện thoại</h3><p class="hint">Chỉ áp dụng khi sản phẩm thuộc danh mục Điện thoại. Mức giá để trống sẽ KHÔNG được bán. Không tự cộng thêm tiền từ giá gốc.</p>';
+    echo '<div class="variant-admin"><h3>Giá từng dung lượng điện thoại</h3><p class="hint">Chỉ áp dụng cho danh mục Điện thoại. Dung lượng để trống sẽ không mở bán. Tồn kho hiện được chia sẻ chung giữa các dung lượng tại trường Tồn kho bên dưới.</p>';
     foreach (['256GB','512GB','1TB'] as $capacity) {
-        echo '<label class="field-group">'.h($capacity).' (VND) <input class="field" name="variant_'.h($capacity).'" type="number" min="1" max="2000000000" placeholder="Để trống nếu chưa có giá" value="'.h($variantValues[$capacity]??'').'"></label>';
+        echo '<label class="field-group">'.h($capacity).' (VND) <input class="field" name="variant_'.h($capacity).'" type="number" min="1" max="2000000000" placeholder="Để trống nếu chưa mở bán" value="'.h($variantValues[$capacity]??'').'"></label>';
     }
     echo '</div>';
-    echo '<label class="field-group">Tồn kho <input class="field" type="number" min="0" max="1000000" name="stock" required value="'.h($p['soluong']??'0').'"></label>';
+    echo '<label class="field-group">Tồn kho dùng chung <input class="field" type="number" min="0" max="1000000" name="stock" required value="'.h($p['soluong']??'0').'"></label>';
     echo '<label class="field-group">Trạng thái <select class="field" name="visible"><option value="1"'.((int)($p['tinhtrang']??1)===1?' selected':'').'>Đang bán</option><option value="0"'.((int)($p['tinhtrang']??1)===0?' selected':'').'>Tạm ẩn</option></select></label>';
     if (!empty($p['hinhanh'])) echo '<div class="image-preview"><img src="'.h(safe_image($p['hinhanh'])).'" alt="Ảnh hiện tại"></div>';
     echo '<label class="field-group">Ảnh (JPG, PNG, WebP ≤ 3MB) <input class="field" type="file" name="photo" accept="image/jpeg,image/png,image/webp"></label>';
@@ -388,47 +525,157 @@ elseif ($page==='categories') {
     }
     echo '</div></div>';
 }
-elseif ($page==='orders' || $page==='payments') {
-    admin_title($page==='orders'?'Quản lý đơn hàng':'Quản lý thanh toán',
-        $page==='orders'?'Xác nhận đơn và theo dõi các bước vận chuyển.':'Xác nhận thanh toán sau khi đối chiếu giao dịch ngân hàng.');
-    $status=(string)($_GET['status']??'');
-    $params=[];$where='';
-    if ($page==='payments') {
-        $where=" WHERE payment_method='BANK'";
-        $review=(string)($_GET['review']??'');
-        if (in_array($review,['REPORTED','NONE','REJECTED','VERIFIED'],true)) {
-            $where.=' AND payment_review_status=?';
-            $params[]=$review;
-        }
-        echo '<nav class="filter-tabs"><a href="'.admin_to('payments').'">Tất cả</a> ';
-        foreach (['REPORTED'=>'Chờ đối soát','NONE'=>'Chưa báo','REJECTED'=>'Cần kiểm tra lại','VERIFIED'=>'Đã xác nhận'] as $key=>$label)
-            echo '<a href="'.admin_to('payments',['review'=>$key]).'">'.h($label).'</a>';
-        echo '</nav>';
+elseif ($page==='payments') {
+    admin_title('Quản lý thanh toán & đối soát','Đối soát thủ công chuyển khoản MB Bank (VietQR) và theo dõi thu tiền COD.');
+    $review=(string)($_GET['review']??'');
+    $q=trim((string)($_GET['q']??''));
+    $curPage=max(1,min(200,(int)($_GET['p']??1)));
+    $perPage=20;$offset=($curPage-1)*$perPage;
+    $where=[];$params=[];
+    switch ($review) {
+        case 'REPORTED':
+            $where[]="payment_method='BANK' AND payment_review_status='REPORTED' AND payment_status='UNPAID' AND order_status<>'CANCELLED'";
+            break;
+        case 'NONE':
+            $where[]="payment_method='BANK' AND payment_review_status='NONE' AND payment_status='UNPAID' AND order_status<>'CANCELLED'";
+            break;
+        case 'REJECTED':
+            $where[]="payment_method='BANK' AND payment_review_status='REJECTED' AND payment_status='UNPAID' AND order_status<>'CANCELLED'";
+            break;
+        case 'VERIFIED':
+            $where[]="payment_method='BANK' AND payment_status='PAID'";
+            break;
+        case 'OVERDUE':
+            $where[]="payment_method='BANK' AND payment_status='UNPAID' AND order_status='PENDING' AND created_at < NOW() - INTERVAL 24 HOUR";
+            break;
+        case 'COD_UNPAID':
+            $where[]="payment_method='COD' AND payment_status='UNPAID' AND order_status<>'CANCELLED'";
+            break;
+        case 'COD_PAID':
+            $where[]="payment_method='COD' AND payment_status='PAID'";
+            break;
+        default:
+            $review='';
+            $where[]="payment_method='BANK'";
+            break;
     }
-    elseif ($status!=='' && in_array($status,['PENDING','CONFIRMED','SHIPPING','COMPLETED','CANCELLED'],true)) {
-        $where=' WHERE order_status=?';$params=[$status];
+    if ($q!=='') {
+        $like='%'.mb_substr($q,0,80).'%';
+        $where[]='(order_code LIKE ? OR customer_name LIKE ? OR phone LIKE ? OR bank_reference LIKE ?)';
+        array_push($params,$like,$like,$like,$like);
     }
+    $whereSql=' WHERE '.implode(' AND ',$where);
+    $totalRows=(int)(row('SELECT COUNT(*) AS n FROM tbl_orders'.$whereSql,$params)['n']??0);
+    $orders=rows('SELECT id,order_code,customer_name,phone,created_at,payment_reported_at,total_amount,payment_method,payment_status,payment_review_status,bank_reference,order_status FROM tbl_orders'.$whereSql.' ORDER BY id DESC LIMIT '.$perPage.' OFFSET '.$offset,$params);
+
     echo '<div class="filter-tabs">';
-    foreach ([''=>'Tất cả','PENDING'=>'Chờ xác nhận','CONFIRMED'=>'Đã xác nhận','SHIPPING'=>'Đang giao','COMPLETED'=>'Hoàn thành','CANCELLED'=>'Đã hủy'] as $k=>$label)
-        echo '<a class="'.($status===$k?'active':'').'" href="'.admin_to('orders',['status'=>$k]).'">'.h($label).'</a>';
+    $tabs=[
+        ''=>'Tất cả BANK',
+        'REPORTED'=>'Khách báo đã CK / Chờ đối soát',
+        'NONE'=>'Chưa báo chuyển khoản',
+        'REJECTED'=>'Cần kiểm tra lại',
+        'VERIFIED'=>'Đã xác nhận thanh toán',
+        'OVERDUE'=>'Quá hạn >24h chưa TT',
+        'COD_UNPAID'=>'COD chưa thu tiền',
+        'COD_PAID'=>'COD đã xác nhận thu',
+    ];
+    foreach ($tabs as $k=>$label) {
+        echo '<a class="'.($review===$k?'active':'').'" href="'.admin_to('payments',array_filter(['review'=>$k,'q'=>$q],static fn($x)=>$x!=='')).'">'.h($label).'</a>';
+    }
     echo '</div>';
-    admin_table_start(['Mã đơn','Khách hàng','Ngày','Tổng tiền','Phương thức','Thanh toán','Đối soát','Trạng thái']);
-    foreach (rows('SELECT id,order_code,customer_name,created_at,total_amount,payment_method,payment_status,payment_review_status,order_status FROM tbl_orders'.$where.' ORDER BY id DESC LIMIT 100',$params) as $o) {
-        $label=['NONE'=>'Chưa báo','REPORTED'=>'Chờ đối soát','REJECTED'=>'Cần kiểm tra lại','VERIFIED'=>'Đã đối soát'][$o['payment_review_status']]??$o['payment_review_status'];
-        echo '<tr><td><a class="link-blue" href="'.admin_to('order',['id'=>$o['id']]).'">'.h($o['order_code']).'</a></td><td>'.h($o['customer_name']).'</td><td>'.h($o['created_at']).'</td><td>'.money((int)$o['total_amount']).'</td><td>'.h($o['payment_method']).'</td><td>'.h($o['payment_status']).'</td><td>'.h($label).'</td><td><span class="badge">'.h($o['order_status']).'</span></td></tr>';
+    echo '<form method="get" class="admin-search"><input type="hidden" name="page" value="payments"><input type="hidden" name="review" value="'.h($review).'"><input class="field" name="q" maxlength="80" value="'.h($q).'" placeholder="Tìm mã đơn, khách hàng, SĐT, mã giao dịch"><button class="button">Tìm</button></form>';
+    admin_table_start(['Mã đơn','Khách hàng','Số tiền','Phương thức','Trạng thái thanh toán','Đối soát / Mã GD','Trạng thái đơn','Thao tác']);
+    foreach ($orders as $o) {
+        $payState=payment_state_summary($o);
+        $meta=$o['payment_method']==='BANK'
+            ? ($o['bank_reference']?'Mã GD: '.h($o['bank_reference']):($o['payment_reported_at']?'Báo lúc '.h($o['payment_reported_at']):h(payment_review_label((string)$o['payment_review_status']))))
+            : ($o['payment_status']==='PAID'?'Đã thu tiền COD':'Thu khi giao hàng');
+        echo '<tr><td><a class="link-blue" href="'.admin_to('order',['id'=>$o['id']]).'"><strong>'.h($o['order_code']).'</strong></a><br><small>'.h($o['created_at']).'</small></td>';
+        echo '<td>'.h($o['customer_name']).'<br><small>'.h($o['phone']).'</small></td>';
+        echo '<td><strong>'.money((int)$o['total_amount']).'</strong></td>';
+        echo '<td>'.h($o['payment_method']).'</td>';
+        echo '<td><span class="status-pill status-pill--'.h($payState['tone']).'">'.h($payState['label']).'</span></td>';
+        echo '<td><small>'.$meta.'</small></td>';
+        echo '<td><span class="status-pill status-pill--'.h(order_status_tone((string)$o['order_status'])).'">'.h(order_status_label((string)$o['order_status'])).'</span></td>';
+        echo '<td><a class="button button--light" href="'.admin_to('order',['id'=>$o['id']]).'">Chi tiết</a></td></tr>';
     }
     admin_table_end();
-    if ($page==='orders') {
-        $legacyOrders=rows('SELECT c.id_cart,c.code_cart,c.cart_status,c.cart_date,c.cart_payment,c.tongtien,u.tenkhachhang,u.dienthoai
-                            FROM tbl_cart c LEFT JOIN tbl_dangky u ON u.id_dangky=c.id_khachhang
-                            ORDER BY c.id_cart DESC LIMIT 50');
+    if (!$orders) echo '<div class="surface"><p class="hint">Không có giao dịch nào khớp bộ lọc hiện tại.</p></div>';
+    $totalPages=(int)ceil($totalRows/$perPage);
+    if ($totalPages>1) {
+        echo '<nav class="pagination">';
+        for ($p=1;$p<=min($totalPages,20);$p++) echo '<a class="'.($p===$curPage?'active':'').'" href="'.admin_to('payments',array_filter(['review'=>$review,'q'=>$q,'p'=>$p])).'">'.$p.'</a>';
+        echo '</nav>';
+    }
+}
+elseif ($page==='orders') {
+    admin_title('Quản lý đơn hàng','Tìm kiếm, lọc và cập nhật tiến độ xử lý đơn hàng.');
+    $status=(string)($_GET['status']??'');
+    $method=(string)($_GET['method']??'');
+    $q=trim((string)($_GET['q']??''));
+    $from=trim((string)($_GET['from']??''));
+    $to=trim((string)($_GET['to']??''));
+    $curPage=max(1,min(200,(int)($_GET['p']??1)));
+    $perPage=20;$offset=($curPage-1)*$perPage;
+    $where=[];$params=[];
+    if (in_array($status,['PENDING','CONFIRMED','PREPARING','SHIPPING','COMPLETED','CANCELLED'],true)) {
+        $where[]='order_status=?';$params[]=$status;
+    } else $status='';
+    if (in_array($method,['BANK','COD'],true)) {
+        $where[]='payment_method=?';$params[]=$method;
+    } else $method='';
+    if ($q!=='') {
+        $like='%'.mb_substr($q,0,80).'%';
+        $where[]='(order_code LIKE ? OR customer_name LIKE ? OR phone LIKE ?)';
+        array_push($params,$like,$like,$like);
+    }
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/',$from)) { $where[]='created_at >= ?'; $params[]=$from.' 00:00:00'; } else $from='';
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/',$to)) { $where[]='created_at <= ?'; $params[]=$to.' 23:59:59'; } else $to='';
+    $whereSql=$where?' WHERE '.implode(' AND ',$where):'';
+    $totalRows=(int)(row('SELECT COUNT(*) AS n FROM tbl_orders'.$whereSql,$params)['n']??0);
+    $orders=rows('SELECT id,order_code,customer_name,phone,created_at,total_amount,payment_method,payment_status,payment_review_status,order_status,tracking_code FROM tbl_orders'.$whereSql.' ORDER BY id DESC LIMIT '.$perPage.' OFFSET '.$offset,$params);
+
+    echo '<div class="filter-tabs">';
+    foreach ([''=>'Tất cả','PENDING'=>'Đã đặt hàng','CONFIRMED'=>'Đã xác nhận','PREPARING'=>'Đang chuẩn bị','SHIPPING'=>'Đang giao','COMPLETED'=>'Đã giao','CANCELLED'=>'Đã hủy'] as $k=>$label) {
+        echo '<a class="'.($status===$k?'active':'').'" href="'.admin_to('orders',array_filter(['status'=>$k,'method'=>$method,'q'=>$q,'from'=>$from,'to'=>$to],static fn($x)=>$x!=='')).'">'.h($label).'</a>';
+    }
+    echo '</div>';
+    echo '<form method="get" class="surface admin-filter-bar"><input type="hidden" name="page" value="orders"><input type="hidden" name="status" value="'.h($status).'">';
+    echo '<input class="field" name="q" maxlength="80" value="'.h($q).'" placeholder="Mã đơn, tên khách, SĐT">';
+    echo '<select class="field" name="method"><option value="">Mọi phương thức</option><option value="BANK"'.selected($method,'BANK').'>VietQR / BANK</option><option value="COD"'.selected($method,'COD').'>COD</option></select>';
+    echo '<input class="field" type="date" name="from" value="'.h($from).'" aria-label="Từ ngày">';
+    echo '<input class="field" type="date" name="to" value="'.h($to).'" aria-label="Đến ngày">';
+    echo '<button class="button" type="submit">Lọc đơn</button></form>';
+
+    admin_table_start(['Mã đơn','Khách hàng','Ngày đặt','Tổng tiền','Thanh toán','Trạng thái đơn','Vận đơn']);
+    foreach ($orders as $o) {
+        $payState=payment_state_summary($o);
+        echo '<tr><td><a class="link-blue" href="'.admin_to('order',['id'=>$o['id']]).'"><strong>'.h($o['order_code']).'</strong></a></td>';
+        echo '<td>'.h($o['customer_name']).'<br><small>'.h($o['phone']).'</small></td>';
+        echo '<td>'.h($o['created_at']).'</td>';
+        echo '<td><strong>'.money((int)$o['total_amount']).'</strong></td>';
+        echo '<td><span class="status-pill status-pill--'.h($payState['tone']).'">'.h($payState['label']).'</span></td>';
+        echo '<td><span class="status-pill status-pill--'.h(order_status_tone((string)$o['order_status'])).'">'.h(order_status_label((string)$o['order_status'])).'</span></td>';
+        echo '<td><small>'.($o['tracking_code']!==''?h($o['tracking_code']):'—').'</small></td></tr>';
+    }
+    admin_table_end();
+    if (!$orders) echo '<div class="surface"><p class="hint">Không có đơn hàng nào khớp bộ lọc.</p></div>';
+    $totalPages=(int)ceil($totalRows/$perPage);
+    if ($totalPages>1) {
+        echo '<nav class="pagination">';
+        for ($p=1;$p<=min($totalPages,20);$p++) echo '<a class="'.($p===$curPage?'active':'').'" href="'.admin_to('orders',array_filter(['status'=>$status,'method'=>$method,'q'=>$q,'from'=>$from,'to'=>$to,'p'=>$p])).'">'.$p.'</a>';
+        echo '</nav>';
+    }
+    $legacyOrders=rows('SELECT c.id_cart,c.code_cart,c.cart_status,c.cart_date,c.cart_payment,c.tongtien,u.tenkhachhang,u.dienthoai
+                        FROM tbl_cart c LEFT JOIN tbl_dangky u ON u.id_dangky=c.id_khachhang
+                        ORDER BY c.id_cart DESC LIMIT 20');
+    if ($legacyOrders) {
         echo '<section class="surface legacy-orders"><h2>Đơn hàng từ hệ thống trước</h2><p class="hint">Lịch sử trong tbl_cart được giữ nguyên; trạng thái cũ chỉ thể hiện đã xem hay chưa xem.</p>';
         admin_table_start(['Mã đơn','Khách hàng','Ngày đặt','Tổng tiền','Thanh toán','Trạng thái']);
         foreach ($legacyOrders as $old) {
             echo '<tr><td><a class="link-blue" href="'.admin_to('legacy_order',['id'=>$old['id_cart']]).'">'.h($old['code_cart']).'</a></td><td>'.h($old['tenkhachhang']??'Khách hàng cũ').'<br><small>'.h($old['dienthoai']??'').'</small></td><td>'.h($old['cart_date']).'</td><td>'.money((int)$old['tongtien']).'</td><td>'.h($old['cart_payment']).'</td><td>'.((int)$old['cart_status']===1?'Chưa xem':'Đã xem').'</td></tr>';
         }
         admin_table_end();
-        if (!$legacyOrders) echo '<p>Không có đơn hàng cũ.</p>';
         echo '</section>';
     }
 }
@@ -436,52 +683,139 @@ elseif ($page==='order') {
     $id=as_int($_GET['id']??0);
     $order=row('SELECT *, (created_at < NOW() - INTERVAL 24 HOUR) AS past_deadline FROM tbl_orders WHERE id=?',[$id]);
     if (!$order) throw new DomainException('Đơn hàng không tồn tại.');
-    admin_title('Đơn hàng '. $order['order_code'],'Kiểm tra thông tin và cập nhật trạng thái.');
-    echo '<div class="admin-grid"><div class="surface"><h2>Thông tin đơn hàng</h2><p>Khách hàng: <strong>'.h($order['customer_name']).'</strong></p><p>SĐT: '.h($order['phone']).'</p><p>Địa chỉ: '.h($order['delivery_address']).'</p><p>Ghi chú: '.h($order['note']).'</p><p>Ngày đặt: '.h($order['created_at']).'</p><hr><h3>Sản phẩm</h3>';
+    $payState=payment_state_summary($order);
+    $curStatus=(string)$order['order_status'];
+    admin_title('Đơn hàng '. $order['order_code'],'Quản lý đối soát thanh toán, tiến độ xử lý, vận đơn và lịch sử thay đổi.','<a class="button button--light" href="'.admin_to('orders').'">← Danh sách đơn</a>');
+
+    echo '<div class="admin-grid"><div class="surface"><h2>Thông tin đơn hàng</h2>';
+    echo '<p>Khách hàng: <strong>'.h($order['customer_name']).'</strong> (<a class="link-blue" href="'.admin_to('customer',['id'=>(int)$order['user_id']]).'">Xem hồ sơ khách</a>)</p>';
+    echo '<p>Số điện thoại: <strong>'.h($order['phone']).'</strong></p>';
+    echo '<p>Địa chỉ giao hàng: '.h($order['delivery_address']).'</p>';
+    if (trim((string)$order['note'])!=='') echo '<p>Ghi chú khách khi đặt: '.h($order['note']).'</p>';
+    echo '<p>Đặt lúc: '.h($order['created_at']).' · Cập nhật gần nhất: '.h($order['updated_at']).'</p>';
+    if (!empty($order['shipped_at'])) echo '<p>Bàn giao vận chuyển lúc: '.h($order['shipped_at']).'</p>';
+    if (!empty($order['delivered_at'])) echo '<p>Giao thành công lúc: '.h($order['delivered_at']).'</p>';
+    if (trim((string)($order['cancel_reason']??''))!=='') echo '<p class="payment-alert"><strong>Lý do hủy:</strong> '.h($order['cancel_reason']).'</p>';
+
+    echo '<hr><h3>Sản phẩm</h3>';
     foreach (rows('SELECT product_name,variant_label,quantity,unit_price FROM tbl_order_items WHERE order_id=?',[$id]) as $item) {
         echo '<div class="summary-line"><span>'.h($item['product_name']).($item['variant_label']!=='BASE'?' · '.h($item['variant_label']):'').' × '.(int)$item['quantity'].'</span><strong>'.money((int)$item['unit_price']*(int)$item['quantity']).'</strong></div>';
     }
-    echo '<hr><h2>Tổng tiền: '.money((int)$order['total_amount']).'</h2></div>';
-    echo '<div class="surface"><h2>Trạng thái xử lý</h2><p><span class="badge">'.h($order['order_status']).'</span></p><p>Thanh toán: <strong>'.h($order['payment_method']).' / '.h($order['payment_status']).'</strong></p>';
-    $transitions=['PENDING'=>['CONFIRMED'=>'Xác nhận','CANCELLED'=>'Hủy đơn'],'CONFIRMED'=>['SHIPPING'=>'Bắt đầu giao','CANCELLED'=>'Hủy đơn'],'SHIPPING'=>['COMPLETED'=>'Đã giao'], 'COMPLETED'=>[], 'CANCELLED'=>[]];
-    foreach ($transitions[$order['order_status']]??[] as $status=>$label) {
-        if ($status==='CANCELLED' && ($order['payment_status']==='PAID' || $order['payment_review_status']==='REPORTED')) continue;
-        if ($order['payment_method']==='BANK' && $order['payment_status']!=='PAID' && $status!=='CANCELLED') continue;
-        echo '<form method="post" class="inline-form">'.csrf_field().'<input type="hidden" name="action" value="order_status"><input type="hidden" name="id" value="'.$id.'"><input type="hidden" name="status" value="'.h($status).'"><button class="button '.($status==='CANCELLED'?'button--danger':'button--light').'" '.($status==='CANCELLED'?'data-confirm="Hủy đơn và hoàn lại tồn kho?"':'').'>'.h($label).'</button></form>';
+    echo '<hr><h2>Tổng tiền: '.money((int)$order['total_amount']).'</h2>';
+
+    // Shipping & notes editor
+    echo '<hr><h3>Thông tin vận chuyển & Ghi chú</h3>';
+    echo '<form method="post" class="admin-subform">'.csrf_field().'<input type="hidden" name="action" value="save_order_notes"><input type="hidden" name="id" value="'.$id.'">';
+    echo '<div class="form-grid-2"><label class="field-group">Đơn vị vận chuyển (thực tế)<input class="field" name="shipping_carrier" maxlength="100" placeholder="VD: Giao Hàng Nhanh, Viettel Post..." value="'.h($order['shipping_carrier']??'').'"></label>';
+    echo '<label class="field-group">Mã vận đơn thực tế (không tự sinh giả)<input class="field" name="tracking_code" maxlength="100" placeholder="Nhập mã vận đơn thật nếu có" value="'.h($order['tracking_code']??'').'"></label></div>';
+    echo '<label class="field-group">Ghi chú gửi khách (hiển thị trên trang đơn của khách)<textarea class="field" name="customer_note" rows="2" maxlength="500">'.h($order['customer_note']??'').'</textarea></label>';
+    echo '<label class="field-group">Ghi chú nội bộ Admin (không hiển thị cho khách)<textarea class="field" name="admin_note" rows="2" maxlength="500">'.h($order['admin_note']??'').'</textarea></label>';
+    echo '<button type="submit" class="button button--light">Lưu ghi chú & vận chuyển</button></form>';
+
+    // Full order status history
+    echo '<hr><h3>Lịch sử trạng thái đơn hàng</h3>';
+    $hist=rows('SELECT from_status,to_status,actor_type,actor_id,note,is_public,created_at FROM tbl_order_status_history WHERE order_id=? ORDER BY id DESC LIMIT 40',[$id]);
+    if (!$hist) {
+        echo '<p class="hint">Chưa có lịch sử trạng thái.</p>';
+    } else {
+        foreach ($hist as $hRow) {
+            $tag=(int)$hRow['is_public']===1?'Công khai':'Nội bộ';
+            $fromTxt=$hRow['from_status']?order_status_label((string)$hRow['from_status']).' → ':'';
+            echo '<div class="payment-event"><strong>'.h($fromTxt.order_status_label((string)$hRow['to_status'])).'</strong> · <span class="badge">'.h($tag).'</span> · '.h($hRow['actor_type']).' #'.(int)$hRow['actor_id'].' · '.h($hRow['created_at']);
+            if (trim((string)$hRow['note'])!=='') echo '<p>'.h($hRow['note']).'</p>';
+            echo '</div>';
+        }
     }
+    echo '</div>';
+
+    // Right column: Order status transition & Payment reconciliation
+    echo '<div class="surface"><h2>Trạng thái & Thanh toán</h2>';
+    echo '<p>Trạng thái đơn: <span class="status-pill status-pill--'.h(order_status_tone($curStatus)).'">'.h(order_status_label($curStatus)).'</span></p>';
+    echo '<p>Thanh toán: <strong>'.h(payment_method_label((string)$order['payment_method'])).'</strong> · <span class="status-pill status-pill--'.h($payState['tone']).'">'.h($payState['label']).'</span></p>';
+
+    $transitions=order_status_transitions();
+    $allowedNext=[];
+    foreach ($transitions[$curStatus]??[] as $nextKey) {
+        if ($nextKey==='CANCELLED' && ($order['payment_status']==='PAID' || $order['payment_review_status']==='REPORTED')) continue;
+        if ($order['payment_method']==='BANK' && $order['payment_status']!=='PAID' && $nextKey!=='CANCELLED') continue;
+        $allowedNext[]=$nextKey;
+    }
+    if ($allowedNext) {
+        echo '<div class="payment-admin-form"><h3>Cập nhật tiến độ đơn hàng</h3>';
+        echo '<form method="post">'.csrf_field().'<input type="hidden" name="action" value="order_status"><input type="hidden" name="id" value="'.$id.'">';
+        echo '<label class="field-group">Chuyển sang trạng thái mới<select class="field" name="status" required>';
+        foreach ($allowedNext as $nk) {
+            echo '<option value="'.h($nk).'">'.h(order_status_label($nk)).'</option>';
+        }
+        echo '</select></label>';
+        if (in_array('SHIPPING',$allowedNext,true)) {
+            echo '<label class="field-group">Đơn vị vận chuyển (khi giao hàng)<input class="field" name="shipping_carrier" maxlength="100" value="'.h($order['shipping_carrier']??'').'" placeholder="VD: Giao Hàng Nhanh, GHTK..."></label>';
+            echo '<label class="field-group">Mã vận đơn thực tế (nếu đã có)<input class="field" name="tracking_code" maxlength="100" value="'.h($order['tracking_code']??'').'" placeholder="Để trống nếu chưa có"></label>';
+        }
+        if (in_array('CANCELLED',$allowedNext,true)) {
+            echo '<label class="field-group">Lý do hủy (nếu chọn Đã hủy)<input class="field" name="cancel_reason" maxlength="300" placeholder="Nhập lý do hủy đơn..."></label>';
+        }
+        echo '<label class="field-group">Ghi chú gửi khách (tùy chọn)<input class="field" name="customer_note" maxlength="500" placeholder="Thông tin hiển thị trong thông báo cho khách"></label>';
+        echo '<label class="field-group">Ghi chú nội bộ (tùy chọn)<input class="field" name="admin_note" maxlength="500" placeholder="Chỉ Admin nhìn thấy"></label>';
+        echo '<button type="submit" class="button full" data-confirm="Cập nhật trạng thái đơn hàng và gửi thông báo cho khách?">Cập nhật trạng thái đơn</button></form></div>';
+    } elseif ($order['payment_method']==='BANK' && $order['payment_status']!=='PAID' && $curStatus==='PENDING') {
+        echo '<p class="payment-alert">Đơn chuyển khoản BANK phải được đối soát và xác nhận <strong>PAID</strong> bên dưới trước khi xác nhận hoặc giao hàng.</p>';
+    }
+
+    // COD explicit payment confirmation
+    if ($order['payment_method']==='COD') {
+        echo '<hr><h3>Thanh toán COD</h3>';
+        if ($order['payment_status']==='PAID') {
+            echo '<div class="payment-status-note"><strong>Đã xác nhận thu tiền COD</strong><p>Xác nhận lúc: '.h((string)($order['cod_paid_at']??'')).'</p></div>';
+        } elseif (in_array($curStatus,['SHIPPING','COMPLETED'],true)) {
+            echo '<form method="post" class="payment-admin-form">'.csrf_field().'<input type="hidden" name="action" value="confirm_cod_paid"><input type="hidden" name="id" value="'.$id.'">';
+            echo '<p class="hint">Chỉ xác nhận sau khi shipper/bưu cục đối soát đã thu đủ tiền COD thực tế từ khách hàng.</p>';
+            echo '<label class="field-group">Ghi chú thu tiền COD (tùy chọn)<input class="field" name="cod_note" maxlength="300" placeholder="VD: Đối soát COD đợt 21/11"></label>';
+            echo '<button type="submit" class="button" data-confirm="Xác nhận đã thu đủ tiền mặt COD cho đơn này?">Xác nhận đã thu tiền COD</button></form>';
+        } else {
+            echo '<p class="hint">Đơn COD sẽ mở nút xác nhận thu tiền khi đơn ở trạng thái Đang giao hoặc Đã giao thành công.</p>';
+        }
+    }
+
+    // BANK VietQR manual reconciliation
     if ($order['payment_method']==='BANK') {
         echo '<hr><h3>Đối soát chuyển khoản VietQR (thủ công)</h3>';
-        echo '<p>Ngân hàng: <strong>MB Bank</strong> · Số tài khoản: <strong>'.h(setting('bank_account')).'</strong></p>';
-        echo '<p>Mã chuyển khoản: <code>BANHANG '.h($order['order_code']).'</code></p>';
-        echo '<p>Tiền cần nhận: <strong>'.money((int)$order['total_amount']).'</strong></p>';
-        $reviewLabel=['NONE'=>'Chưa có báo cáo','REPORTED'=>'Khách báo đã chuyển khoản','REJECTED'=>'Cần kiểm tra lại','VERIFIED'=>'Đã đối soát'][$order['payment_review_status']]??$order['payment_review_status'];
-        echo '<p>Đối soát: <strong>'.h($reviewLabel).'</strong></p>';
-        if ($order['payment_reported_at']) echo '<p>Khách báo lúc: '.h($order['payment_reported_at']).'</p>';
-        if ($order['customer_transfer_note']) echo '<p>Ghi chú khách: '.h($order['customer_transfer_note']).'</p>';
+        echo '<p>Ngân hàng nhận: <strong>MB Bank</strong> · Số tài khoản: <strong>'.h(setting('bank_account')).'</strong></p>';
+        echo '<p>Nội dung chuyển khoản: <code>BANHANG '.h($order['order_code']).'</code></p>';
+        echo '<p>Tổng tiền cần nhận: <strong>'.money((int)$order['total_amount']).'</strong></p>';
+        echo '<p>Trạng thái đối soát: <strong>'.h(payment_review_label((string)$order['payment_review_status'])).'</strong></p>';
+        if ($order['payment_reported_at']) echo '<p>Khách báo lúc: <strong>'.h($order['payment_reported_at']).'</strong></p>';
+        if ($order['customer_transfer_note']) echo '<p>Ghi chú chuyển khoản của khách: '.h($order['customer_transfer_note']).'</p>';
         if ($order['payment_status']==='PAID') {
-            echo '<p class="payment-status-note">Đã đối soát và nhận đủ tiền.</p>';
+            echo '<div class="payment-status-note"><strong>Đã đối soát và nhận đủ tiền!</strong>';
             echo '<p>Mã giao dịch MB Bank: <strong>'.h($order['bank_reference']??'').'</strong></p>';
-            echo '<p>Xác nhận lúc: '.h($order['payment_verified_at']??'').'</p>';
-        } elseif ($order['order_status']!=='CANCELLED') {
-            echo '<div class="payment-admin-form"><p class="hint">Chỉ xác nhận sau khi kiểm tra TIỀN VÀO trong sao kê MB Bank. Biên lai/ảnh hoặc việc khách bấm nút không chứng minh đã nhận tiền.</p>';
+            echo '<p>Xác nhận lúc: '.h($order['payment_verified_at']??'').' · Admin #'.(int)($order['payment_verified_by']??0).'</p></div>';
+        } elseif ($curStatus!=='CANCELLED') {
+            echo '<div class="payment-admin-form"><p class="hint">Chỉ xác nhận sau khi kiểm tra TIỀN VÀO thực tế trong sao kê MB Bank. Nút khách bấm hoặc ảnh chụp không chứng minh đã nhận tiền.</p>';
             echo '<form method="post">'.csrf_field().'<input type="hidden" name="action" value="mark_paid"><input type="hidden" name="id" value="'.$id.'">';
-            echo '<label class="field-group">Mã giao dịch trên sao kê MB Bank <input class="field" type="text" name="bank_reference" maxlength="120" minlength="5" required placeholder="Mã giao dịch duy nhất"></label>';
-            echo '<label class="field-group">Số tiền thực nhận (VND) <input class="field" type="number" min="1" max="1000000000000" name="received_amount" required placeholder="Nhập số tiền đã nhận"></label>';
-            echo '<label class="payment-check"><input type="checkbox" name="verified_receipt" value="1" required> Tôi đã kiểm tra đúng tài khoản nhận, mã đơn, số tiền và giao dịch tiền vào thực tế.</label>';
-            echo '<button type="submit" class="button" data-confirm="Bạn đã đối soát xong tiền vào MB Bank?">Xác nhận PAID sau đối soát</button></form></div>';
+            echo '<label class="field-group">Mã giao dịch trên sao kê MB Bank (duy nhất)<input class="field" type="text" name="bank_reference" maxlength="120" minlength="5" required placeholder="VD: FT2611218899001"></label>';
+            echo '<label class="field-group">Số tiền thực nhận (VND)<input class="field" type="number" min="1" max="1000000000000" name="received_amount" required placeholder="Phải khớp '.(int)$order['total_amount'].'"></label>';
+            echo '<label class="payment-check"><input type="checkbox" name="verified_receipt" value="1" required> Tôi đã kiểm tra đúng tài khoản nhận MB Bank, mã đơn, số tiền thực nhận và giao dịch tiền vào thực tế.</label>';
+            echo '<button type="submit" class="button full" data-confirm="Bạn đã đối soát xong tiền vào MB Bank và muốn xác nhận PAID?">Xác nhận PAID sau đối soát</button></form></div>';
             if ($order['payment_review_status']==='REPORTED') {
                 echo '<form method="post" class="payment-reject-form">'.csrf_field().'<input type="hidden" name="action" value="reject_bank_report"><input type="hidden" name="id" value="'.$id.'">';
-                echo '<label class="field-group">Lý do chưa xác minh được <textarea class="field" name="reason" maxlength="300" minlength="5" required placeholder="Không thấy giao dịch, nội dung không khớp..."></textarea></label>';
-                echo '<button type="submit" class="button button--light" data-confirm="Yêu cầu khách kiểm tra lại giao dịch?">Báo chưa tìm thấy giao dịch</button></form>';
+                echo '<label class="field-group">Lý do chưa xác minh được <textarea class="field" name="reason" maxlength="300" minlength="5" required placeholder="Không thấy giao dịch trên sao kê, nội dung không khớp..."></textarea></label>';
+                echo '<button type="submit" class="button button--light" data-confirm="Báo chưa tìm thấy giao dịch và yêu cầu khách kiểm tra lại?">Báo chưa tìm thấy giao dịch</button></form>';
             }
-            if ($order['order_status']==='PENDING' && (int)$order['past_deadline']===1 && $order['payment_review_status']!=='REPORTED') {
+            if ($curStatus==='PENDING' && (int)$order['past_deadline']===1 && $order['payment_review_status']!=='REPORTED') {
                 echo '<form method="post" class="payment-expire-form">'.csrf_field().'<input type="hidden" name="action" value="expire_unpaid"><input type="hidden" name="id" value="'.$id.'">';
-                echo '<p class="hint">Đơn chưa thanh toán quá 24 giờ. Chỉ hủy khi chắc chắn không có khoản chuyển tiền đang cần đối soát. Hủy sẽ hoàn tồn kho.</p>';
-                echo '<button type="submit" class="button button--danger" data-confirm="Hủy đơn quá 24 giờ và hoàn kho? Kiểm tra MB Bank lần cuối trước khi tiếp tục.">Hủy thủ công đơn quá hạn</button></form>';
+                echo '<p class="hint">Đơn chưa thanh toán quá 24 giờ và không có báo cáo đang chờ. Hủy sẽ hoàn tồn kho một lần.</p>';
+                echo '<button type="submit" class="button button--danger" data-confirm="Hủy đơn quá 24 giờ và hoàn kho?">Hủy thủ công đơn quá hạn</button></form>';
             }
         }
-        echo '<hr><h3>Nhật ký đối soát</h3>';
-        foreach (rows('SELECT event_type,actor_type,actor_id,detail,reference_code,created_at FROM tbl_payment_events WHERE order_id=? ORDER BY id DESC LIMIT 30',[$id]) as $event) {
+    }
+
+    echo '<hr><h3>Nhật ký đối soát thanh toán</h3>';
+    $payEvents=rows('SELECT event_type,actor_type,actor_id,detail,reference_code,created_at FROM tbl_payment_events WHERE order_id=? ORDER BY id DESC LIMIT 30',[$id]);
+    if (!$payEvents) {
+        echo '<p class="hint">Chưa có sự kiện đối soát thanh toán.</p>';
+    } else {
+        foreach ($payEvents as $event) {
             echo '<div class="payment-event"><strong>'.h($event['event_type']).'</strong> · '.h($event['actor_type']).' #'.(int)$event['actor_id'].' · '.h($event['created_at']);
             if ($event['detail']!=='') echo '<p>'.h($event['detail']).'</p>';
             if ($event['reference_code']) echo '<small>Mã giao dịch: '.h($event['reference_code']).'</small>';
@@ -519,31 +853,149 @@ elseif ($page==='legacy_order') {
     echo '</section></div>';
 }
 elseif ($page==='customers') {
-    admin_title('Khách hàng','Dữ liệu tài khoản và lịch sử đặt hàng.');
-    admin_table_start(['Khách hàng','Email','Số điện thoại','Địa chỉ','Số đơn']);
-    foreach (rows('SELECT u.id_dangky,u.tenkhachhang,u.email,u.dienthoai,u.diachi,(SELECT COUNT(*) FROM tbl_orders o WHERE o.user_id=u.id_dangky) AS order_count FROM tbl_dangky u ORDER BY u.id_dangky DESC LIMIT 100') as $c)
-        echo '<tr><td>'.h($c['tenkhachhang']).'</td><td>'.h($c['email']).'</td><td>'.h($c['dienthoai']).'</td><td>'.h($c['diachi']).'</td><td>'.(int)$c['order_count'].'</td></tr>';
+    admin_title('Quản lý khách hàng','Thông tin liên hệ, tổng giá trị mua hàng, đơn chưa thanh toán và lịch sử đơn.');
+    $q=trim((string)($_GET['q']??''));
+    $curPage=max(1,min(200,(int)($_GET['p']??1)));
+    $perPage=20;$offset=($curPage-1)*$perPage;
+    $where='';$params=[];
+    if ($q!=='') {
+        $like='%'.mb_substr($q,0,80).'%';
+        $where=' WHERE u.tenkhachhang LIKE ? OR u.email LIKE ? OR u.dienthoai LIKE ?';
+        $params=[$like,$like,$like];
+    }
+    $totalRows=(int)(row('SELECT COUNT(*) AS n FROM tbl_dangky u'.$where,$params)['n']??0);
+    $list=rows(
+        "SELECT u.id_dangky,u.tenkhachhang,u.email,u.dienthoai,u.diachi,
+                COUNT(o.id) AS total_orders,
+                COALESCE(SUM(CASE WHEN o.order_status='COMPLETED' THEN 1 ELSE 0 END),0) AS completed_orders,
+                COALESCE(SUM(CASE WHEN o.payment_status='UNPAID' AND o.order_status<>'CANCELLED' THEN 1 ELSE 0 END),0) AS unpaid_orders,
+                COALESCE(SUM(CASE WHEN o.payment_status='PAID' THEN o.total_amount ELSE 0 END),0) AS paid_spent,
+                COALESCE(SUM(CASE WHEN o.order_status<>'CANCELLED' THEN o.total_amount ELSE 0 END),0) AS gross_spent
+         FROM tbl_dangky u
+         LEFT JOIN tbl_orders o ON o.user_id=u.id_dangky
+         {$where}
+         GROUP BY u.id_dangky
+         ORDER BY u.id_dangky DESC
+         LIMIT {$perPage} OFFSET {$offset}",
+        $params
+    );
+    echo '<form method="get" class="admin-search"><input type="hidden" name="page" value="customers"><input class="field" name="q" maxlength="80" value="'.h($q).'" placeholder="Tìm tên, email hoặc SĐT"><button class="button">Tìm</button></form>';
+    admin_table_start(['Khách hàng','Liên hệ','Tổng đơn','Hoàn thành','Chưa TT','Đã thanh toán (PAID)','Giá trị đặt','Thao tác']);
+    foreach ($list as $c) {
+        echo '<tr><td><strong>'.h($c['tenkhachhang']).'</strong><br><small>'.h($c['diachi']).'</small></td>';
+        echo '<td>'.h($c['email']).'<br><small>'.h($c['dienthoai']).'</small></td>';
+        echo '<td>'.(int)$c['total_orders'].'</td>';
+        echo '<td>'.(int)$c['completed_orders'].'</td>';
+        echo '<td>'.((int)$c['unpaid_orders']>0?'<span class="status-pill status-pill--warning">'.(int)$c['unpaid_orders'].'</span>':'0').'</td>';
+        echo '<td><strong>'.money((int)$c['paid_spent']).'</strong></td>';
+        echo '<td>'.money((int)$c['gross_spent']).'</td>';
+        echo '<td><a class="link-blue" href="'.admin_to('customer',['id'=>$c['id_dangky']]).'">Chi tiết →</a></td></tr>';
+    }
     admin_table_end();
+    $totalPages=(int)ceil($totalRows/$perPage);
+    if ($totalPages>1) {
+        echo '<nav class="pagination">';
+        for ($p=1;$p<=min($totalPages,20);$p++) echo '<a class="'.($p===$curPage?'active':'').'" href="'.admin_to('customers',array_filter(['q'=>$q,'p'=>$p])).'">'.$p.'</a>';
+        echo '</nav>';
+    }
+}
+elseif ($page==='customer') {
+    $cid=as_int($_GET['id']??0,1,2147483647);
+    $customer=row('SELECT id_dangky,tenkhachhang,email,dienthoai,diachi FROM tbl_dangky WHERE id_dangky=?',[$cid]);
+    if (!$customer) throw new DomainException('Không tìm thấy khách hàng.');
+    $orders=rows('SELECT id,order_code,total_amount,payment_method,payment_status,payment_review_status,order_status,created_at FROM tbl_orders WHERE user_id=? ORDER BY id DESC LIMIT 100',[$cid]);
+    $paidSpent=0;$unpaidCount=0;$completedCount=0;$grossSpent=0;
+    foreach ($orders as $o) {
+        if ($o['payment_status']==='PAID') $paidSpent+=(int)$o['total_amount'];
+        if ($o['payment_status']==='UNPAID' && $o['order_status']!=='CANCELLED') $unpaidCount++;
+        if ($o['order_status']==='COMPLETED') $completedCount++;
+        if ($o['order_status']!=='CANCELLED') $grossSpent+=(int)$o['total_amount'];
+    }
+    admin_title('Khách hàng: '.$customer['tenkhachhang'],'Hồ sơ liên hệ, lịch sử đặt hàng và gửi thông báo đơn hàng.','<a class="button button--light" href="'.admin_to('customers').'">← Danh sách khách</a>');
+    echo '<div class="stats">';
+    stat_card('Tổng số đơn',(string)count($orders));
+    stat_card('Đơn hoàn thành',(string)$completedCount,'','success');
+    stat_card('Đơn chưa thanh toán',(string)$unpaidCount,'',$unpaidCount>0?'warning':'');
+    stat_card('Đã xác nhận thanh toán',money($paidSpent),'Tổng đặt chưa hủy: '.money($grossSpent),'success');
+    echo '</div>';
+    echo '<div class="admin-grid"><div class="surface"><h2>Thông tin & Lịch sử đơn hàng</h2>';
+    echo '<p><strong>'.h($customer['tenkhachhang']).'</strong></p><p>Email: '.h($customer['email']).' · SĐT: '.h($customer['dienthoai']).'</p><p>Địa chỉ: '.h($customer['diachi']?: 'Chưa cập nhật').'</p><hr>';
+    if (!$orders) {
+        echo '<p class="hint">Khách hàng chưa có đơn hàng nào.</p>';
+    } else {
+        admin_table_start(['Mã đơn','Ngày đặt','Tổng tiền','Thanh toán','Trạng thái']);
+        foreach ($orders as $o) {
+            $ps=payment_state_summary($o);
+            echo '<tr><td><a class="link-blue" href="'.admin_to('order',['id'=>$o['id']]).'">'.h($o['order_code']).'</a></td><td>'.h($o['created_at']).'</td><td>'.money((int)$o['total_amount']).'</td>';
+            echo '<td><span class="status-pill status-pill--'.h($ps['tone']).'">'.h($ps['label']).'</span></td>';
+            echo '<td><span class="status-pill status-pill--'.h(order_status_tone((string)$o['order_status'])).'">'.h(order_status_label((string)$o['order_status'])).'</span></td></tr>';
+        }
+        admin_table_end();
+    }
+    echo '</div><div class="surface"><h2>Gửi thông báo liên quan đến đơn</h2>';
+    if (!$orders) {
+        echo '<p class="hint">Khách hàng chưa có đơn hàng để gửi thông báo.</p>';
+    } else {
+        echo '<form method="post">'.csrf_field().'<input type="hidden" name="action" value="send_customer_notification"><input type="hidden" name="customer_id" value="'.$cid.'">';
+        echo '<label class="field-group">Chọn đơn hàng liên quan<select class="field" name="order_id" required>';
+        foreach ($orders as $o) {
+            echo '<option value="'.(int)$o['id'].'">'.h($o['order_code'].' · '.money((int)$o['total_amount']).' · '.order_status_label((string)$o['order_status'])).'</option>';
+        }
+        echo '</select></label>';
+        echo '<label class="field-group">Tiêu đề thông báo<input class="field" name="title" minlength="3" maxlength="180" required placeholder="VD: Cập nhật lịch giao hàng đơn của bạn"></label>';
+        echo '<label class="field-group">Nội dung gửi khách<textarea class="field" name="message" rows="4" minlength="5" maxlength="600" required placeholder="Nhập nội dung rõ ràng gửi tới trung tâm thông báo của khách..."></textarea></label>';
+        echo '<button type="submit" class="button full">Gửi thông báo tới khách</button></form>';
+    }
+    echo '</div></div>';
 }
 elseif ($page==='inventory') {
-    admin_title('Tồn kho sản phẩm','Hàng sắp hết và trạng thái hiển thị.');
-    admin_table_start(['Sản phẩm','SKU','Tồn kho','Trạng thái','Thao tác']);
-    foreach (rows('SELECT id_sanpham,tensanpham,masp,soluong,tinhtrang FROM tbl_sanpham ORDER BY soluong ASC,id_sanpham DESC LIMIT 100') as $p)
-        echo '<tr><td>'.h($p['tensanpham']).'</td><td>'.h($p['masp']).'</td><td>'.(int)$p['soluong'].'</td><td><span class="badge">'.((int)$p['soluong']<=3?'Cần nhập hàng':'Ổn định').'</span></td><td><a class="link-blue" href="'.admin_to('product_form',['id'=>$p['id_sanpham']]).'">Cập nhật kho</a></td></tr>';
+    admin_title('Tồn kho sản phẩm','Tồn kho lưu tại tbl_sanpham.soluong và được dùng chung cho các dung lượng điện thoại.');
+    echo '<div class="alert info">Chính sách tồn kho hiện tại: <strong>dùng chung theo sản phẩm</strong> (tbl_sanpham.soluong). Khi hủy đơn hợp lệ, hệ thống tự hoàn lại tồn kho chính xác một lần trong transaction.</div>';
+    admin_table_start(['Sản phẩm','SKU','Danh mục','Tồn kho','Cảnh báo','Thao tác']);
+    foreach (rows('SELECT p.id_sanpham,p.tensanpham,p.masp,p.soluong,p.tinhtrang,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc ORDER BY p.soluong ASC,p.id_sanpham DESC LIMIT 100') as $p) {
+        $stock=(int)$p['soluong'];
+        $tone=$stock<=0?'danger':($stock<=5?'warning':'success');
+        $lbl=$stock<=0?'Hết hàng':($stock<=5?'Sắp hết hàng':'Ổn định');
+        echo '<tr><td>'.h($p['tensanpham']).'</td><td>'.h($p['masp']).'</td><td>'.h($p['tendanhmuc']).'</td><td><strong>'.$stock.'</strong></td><td><span class="status-pill status-pill--'.$tone.'">'.$lbl.'</span></td><td><a class="link-blue" href="'.admin_to('product_form',['id'=>$p['id_sanpham']]).'">Cập nhật kho</a></td></tr>';
+    }
     admin_table_end();
 }
 elseif ($page==='revenue') {
-    admin_title('Thống kê doanh thu','Báo cáo đơn hàng của cửa hàng.');
-    $total=row("SELECT COALESCE(SUM(total_amount),0) AS total,COUNT(*) AS n FROM tbl_orders WHERE order_status<>'CANCELLED'");
-    $paid=row("SELECT COALESCE(SUM(total_amount),0) AS total FROM tbl_orders WHERE payment_status='PAID'");
+    admin_title('Thống kê doanh thu','Phân biệt rõ tiền đã xác nhận thanh toán (PAID), giá trị đặt hàng và khoản chưa thu.');
+    $rev=row(
+        "SELECT COALESCE(SUM(CASE WHEN payment_status='PAID' THEN total_amount ELSE 0 END),0) AS paid_total,
+                COALESCE(SUM(CASE WHEN payment_status='PAID' AND payment_method='BANK' THEN total_amount ELSE 0 END),0) AS bank_paid,
+                COALESCE(SUM(CASE WHEN payment_status='PAID' AND payment_method='COD' THEN total_amount ELSE 0 END),0) AS cod_paid,
+                COALESCE(SUM(CASE WHEN payment_status='UNPAID' AND order_status<>'CANCELLED' THEN total_amount ELSE 0 END),0) AS unpaid_total,
+                COALESCE(SUM(CASE WHEN payment_status='UNPAID' AND payment_method='BANK' AND order_status<>'CANCELLED' THEN total_amount ELSE 0 END),0) AS bank_unpaid,
+                COALESCE(SUM(CASE WHEN payment_status='UNPAID' AND payment_method='COD' AND order_status<>'CANCELLED' THEN total_amount ELSE 0 END),0) AS cod_unpaid,
+                COALESCE(SUM(CASE WHEN order_status<>'CANCELLED' THEN total_amount ELSE 0 END),0) AS gross_total,
+                SUM(order_status<>'CANCELLED') AS active_orders
+         FROM tbl_orders"
+    );
     echo '<div class="stats">';
-    stat_card('Doanh thu chưa hủy',money((int)($total['total']??0)));
-    stat_card('Giá trị đã xác nhận thanh toán',money((int)($paid['total']??0)));
-    stat_card('Đơn chưa hủy',(string)($total['n']??0));
-    echo '</div><div class="surface"><h2>Doanh thu theo tháng</h2>';
-    admin_table_start(['Tháng','Số đơn','Giá trị']);
-    foreach (rows("SELECT DATE_FORMAT(created_at,'%Y-%m') AS month,COUNT(*) AS n,SUM(total_amount) AS total FROM tbl_orders WHERE order_status<>'CANCELLED' GROUP BY DATE_FORMAT(created_at,'%Y-%m') ORDER BY month DESC LIMIT 12") as $m)
-        echo '<tr><td>'.h($m['month']).'</td><td>'.(int)$m['n'].'</td><td>'.money((int)$m['total']).'</td></tr>';
+    stat_card('Doanh thu thực nhận (PAID)',money((int)($rev['paid_total']??0)),'BANK đã đối soát: '.money((int)($rev['bank_paid']??0)).' · COD đã thu: '.money((int)($rev['cod_paid']??0)),'success');
+    stat_card('BANK chưa thanh toán',money((int)($rev['bank_unpaid']??0)),'Không tính vào doanh thu thực nhận','warning');
+    stat_card('COD chưa xác nhận thu',money((int)($rev['cod_unpaid']??0)),'Đơn COD chưa đối soát tiền mặt','info');
+    stat_card('Tổng giá trị đặt (chưa hủy)',money((int)($rev['gross_total']??0)),(int)($rev['active_orders']??0).' đơn hàng chưa hủy');
+    echo '</div>';
+    $range=(string)($_GET['range']??'12m');
+    echo '<div class="surface chart-panel">';
+    render_revenue_chart($range,'revenue');
+    echo '</div>';
+    echo '<div class="surface admin-grid--spaced"><h2>Chi tiết theo tháng</h2>';
+    admin_table_start(['Tháng','Số đơn chưa hủy','Doanh thu thực nhận (PAID)','BANK đã đối soát','COD đã thu','Chưa thanh toán']);
+    foreach (rows(
+        "SELECT DATE_FORMAT(created_at,'%Y-%m') AS month,
+                SUM(order_status<>'CANCELLED') AS n,
+                COALESCE(SUM(CASE WHEN payment_status='PAID' THEN total_amount ELSE 0 END),0) AS paid,
+                COALESCE(SUM(CASE WHEN payment_status='PAID' AND payment_method='BANK' THEN total_amount ELSE 0 END),0) AS bank_paid,
+                COALESCE(SUM(CASE WHEN payment_status='PAID' AND payment_method='COD' THEN total_amount ELSE 0 END),0) AS cod_paid,
+                COALESCE(SUM(CASE WHEN payment_status='UNPAID' AND order_status<>'CANCELLED' THEN total_amount ELSE 0 END),0) AS unpaid
+         FROM tbl_orders GROUP BY DATE_FORMAT(created_at,'%Y-%m') ORDER BY month DESC LIMIT 12"
+    ) as $m) {
+        echo '<tr><td><strong>'.h($m['month']).'</strong></td><td>'.(int)$m['n'].'</td><td><strong>'.money((int)$m['paid']).'</strong></td><td>'.money((int)$m['bank_paid']).'</td><td>'.money((int)$m['cod_paid']).'</td><td>'.money((int)$m['unpaid']).'</td></tr>';
+    }
     admin_table_end();
     echo '</div>';
 }
@@ -554,7 +1006,7 @@ elseif ($page==='recommendations') {
     stat_card('Sản phẩm có thể gợi ý',(string)($count['n']??0));
     $countCat=row('SELECT COUNT(*) AS n FROM tbl_danhmuc');
     stat_card('Danh mục',(string)($countCat['n']??0));
-    echo '</div><div class="surface"><h2>Cơ chế gợi ý hiện tại</h2><p>Tại trang chi tiết sản phẩm: hiển thị sản phẩm cùng danh mục, mới nhất, khác sản phẩm đang xem.</p><p>Trên trang chủ: sản phẩm mới và sản phẩm nổi bật.</p><p>Để sử dụng AI cần dữ liệu hành vi, consent phù hợp và đánh giá offline trước khi triển khai.</p></div>';
+    echo '</div><div class="surface"><h2>Cơ chế gợi ý hiện tại</h2><p>Tại trang chi tiết sản phẩm: hiển thị sản phẩm cùng danh mục, mới nhất, khác sản phẩm đang xem.</p><p>Trên trang chủ: sản phẩm mới và sản phẩm nổi bật.</p></div>';
 }
 elseif ($page==='news') {
     admin_title('Quản lý tin tức','Biên tập nội dung công nghệ.', '<a class="button" href="'.admin_to('article_form').'">＋ Viết bài</a>');
@@ -577,11 +1029,11 @@ elseif ($page==='article_form') {
     echo '<button class="button">Lưu bài viết</button></form>';
 }
 elseif ($page==='settings') {
-    admin_title('Cấu hình cửa hàng','Đổi thông tin cửa hàng và tài khoản VietQR không cần sửa code.');
+    admin_title('Cấu hình cửa hàng & Email','Đổi thông tin cửa hàng, tài khoản VietQR và theo dõi hàng đợi SMTP.');
     echo '<form class="surface admin-form" method="post">'.csrf_field().'<input type="hidden" name="action" value="save_settings"><div class="form-grid"><div>';
     echo '<h2>Thông tin chung</h2><label class="field-group">Tên cửa hàng <input class="field" name="store_name" required maxlength="100" value="'.h(setting('store_name')).'"></label>';
     echo '<label class="field-group">Email hỗ trợ <input class="field" type="email" name="support_email" maxlength="100" value="'.h(setting('support_email')).'"></label></div><div>';
-    echo '<h2>VietQR chuyển khoản</h2><p class="hint">Mã ngân hàng (BIN/short code) từ VietQR; không phải mã truy cập bí mật.</p>';
+    echo '<h2>VietQR chuyển khoản</h2><p class="hint">Mã ngân hàng (BIN/short code) từ VietQR; không phải mật khẩu hay API bí mật.</p>';
     echo '<label class="field-group">Mã ngân hàng <input class="field" name="bank_id" maxlength="15" placeholder="MB hoặc 970422" value="'.h(setting('bank_id')).'"></label>';
     echo '<label class="field-group">Số tài khoản <input class="field" name="bank_account" maxlength="24" value="'.h(setting('bank_account')).'"></label>';
     echo '<label class="field-group">Tên chủ tài khoản <input class="field" name="bank_name" maxlength="150" value="'.h(setting('bank_name')).'"></label>';
@@ -589,11 +1041,33 @@ elseif ($page==='settings') {
     $contactRow=row('SELECT thongtinlienhe FROM tbl_lienhe WHERE id=1');
     echo '<label class="field-group">Thông tin liên hệ hiển thị trên website <textarea class="field" name="contact_info" rows="5" maxlength="2000">'.h(strip_tags((string)($contactRow['thongtinlienhe']??''))).'</textarea></label>';
     echo '<button class="button" type="submit">Lưu cấu hình</button></form>';
+
+    // SMTP & Email Outbox monitoring panel
+    $smtpCfg=smtp_config();
+    $outboxCounts=row("SELECT SUM(status='SENT') AS sent_n, SUM(status='PENDING') AS pending_n, SUM(status='FAILED') AS failed_n, SUM(status='SKIPPED') AS skipped_n FROM tbl_email_outbox");
+    echo '<section class="surface admin-grid--spaced"><h2>Email thông báo (SMTP Outbox)</h2>';
+    if (smtp_is_configured()) {
+        echo '<p><span class="status-pill status-pill--success">SMTP đã cấu hình</span> · Host: <strong>'.h($smtpCfg['host']).':'.(int)$smtpCfg['port'].'</strong> ('.h($smtpCfg['secure']).') · Từ: <strong>'.h($smtpCfg['from_email']).'</strong></p>';
+    } else {
+        echo '<p><span class="status-pill status-pill--warning">SMTP chưa cấu hình</span> · Cấu hình qua biến môi trường hoặc <code>admin/config/config.local.php</code> (xem mẫu <code>config.local.example.php</code>). Website và trung tâm thông báo khách hàng vẫn hoạt động bình thường.</p>';
+    }
+    echo '<p>Thống kê hàng đợi: Đã gửi <strong>'.(int)($outboxCounts['sent_n']??0).'</strong> · Đang chờ <strong>'.(int)($outboxCounts['pending_n']??0).'</strong> · Thất bại <strong>'.(int)($outboxCounts['failed_n']??0).'</strong> · Bỏ qua (chưa bật SMTP) <strong>'.(int)($outboxCounts['skipped_n']??0).'</strong></p>';
+    echo '<form method="post" class="inline-form">'.csrf_field().'<input type="hidden" name="action" value="retry_email_outbox"><button type="submit" class="button button--light">Xử lý / thử gửi lại hàng đợi email</button></form>';
+    $recentMail=rows('SELECT id,recipient_email,event_type,subject,status,attempts,last_error,created_at,sent_at FROM tbl_email_outbox ORDER BY id DESC LIMIT 10');
+    if ($recentMail) {
+        admin_table_start(['Người nhận','Sự kiện','Tiêu đề','Trạng thái','Lần thử','Thời gian / Ghi chú']);
+        foreach ($recentMail as $em) {
+            $eTone=$em['status']==='SENT'?'success':($em['status']==='FAILED'?'danger':($em['status']==='SKIPPED'?'neutral':'warning'));
+            echo '<tr><td>'.h($em['recipient_email']).'</td><td>'.h($em['event_type']).'</td><td>'.h($em['subject']).'</td><td><span class="status-pill status-pill--'.$eTone.'">'.h($em['status']).'</span></td><td>'.(int)$em['attempts'].'</td><td><small>'.h($em['sent_at']?:$em['created_at']).($em['last_error']!==''?' · '.$em['last_error']:'').'</small></td></tr>';
+        }
+        admin_table_end();
+    }
+    echo '</section>';
 }
 admin_page_foot();
 } catch (Throwable $e) {
     error_log('[BanHang admin render] '.$e->getMessage());
     http_response_code(500);
-    echo '<div class="admin-content"><div class="surface"><h2>Có lỗi hiển thị trang quản trị</h2><p>Kiểm tra log, MySQL và migration.</p></div></div>';
+    echo '<div class="admin-content"><div class="surface"><h2>Có lỗi hiển thị trang quản trị</h2><p>Kiểm tra log, MySQL và đã import banhang.sql mới nhất.</p></div></div>';
     page_foot(true);
 }
