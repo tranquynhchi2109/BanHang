@@ -132,14 +132,15 @@ elseif ($page==='cart' || $page==='checkout') {
         echo '<label class="field-group"><span>Ghi chú giao hàng (không bắt buộc)</span><textarea class="field" maxlength="500" name="note"></textarea></label>';
         echo '<h3>Phương thức thanh toán</h3><label class="radio-option"><input type="radio" name="payment" value="COD" checked> Thanh toán khi nhận hàng (COD)</label>';
         echo '<label class="radio-option"><input type="radio" name="payment" value="BANK"> Chuyển khoản ngân hàng / VietQR</label>';
-        echo '<p class="hint">VietQR hiển thị thông tin chuyển khoản, không tự xác nhận tiền đã nhận.</p></form>';
+        echo '<p class="hint">VietQR hiển thị thông tin chuyển khoản, không tự xác nhận tiền đã nhận.</p>';
+        echo '<a class="link-blue" href="'.link_to('cart').'">← Quay lại giỏ hàng nếu bạn chưa muốn đặt</a></form>';
     }
     echo '</section><aside class="surface order-summary"><h2>Tóm tắt đơn hàng</h2>';
     foreach ($items as $item) echo '<div class="summary-line"><span>'.h($item['tensanpham']).($item['variant_label']!==''?' · '.h($item['variant_label']):'').' × '.(int)$item['cart_qty'].'</span><strong>'.($item['cart_price_error']?'Chưa có giá':money((int)$item['cart_total'])).'</strong></div>';
     echo '<hr><div class="summary-total"><span>Tổng tiền</span><strong>'.($hasMissingPrice?'Chưa thể tính':money((int)$total)).'</strong></div>';
     if ($hasMissingPrice) echo '<p class="hint">Có sản phẩm chưa được định giá. Xóa dòng đó khỏi giỏ trước khi thanh toán.</p>';
     if ($items && !$hasMissingPrice) {
-        if ($page==='checkout') echo '<button form="checkout-form" class="button full">Xác nhận đặt hàng →</button>';
+        if ($page==='checkout') echo '<button form="checkout-form" class="button full" data-confirm="Tạo đơn hàng và tạm giữ tồn kho? Nếu đổi ý, bạn có thể hủy khi đơn chưa được xử lý hoặc chưa báo chuyển khoản.">Xác nhận đặt hàng →</button>';
         else echo '<a class="button full" href="'.link_to('checkout').'">Tiến hành thanh toán →</a>';
     }
     echo '</aside></div></div>';
@@ -306,6 +307,46 @@ elseif ($page==='orders' || $page==='order') {
                 echo '<div class="timeline-step is-'.h($step['state']).'"><span class="timeline-dot"></span><strong>'.h($step['label']).'</strong><small>'.h($step['time']).'</small></div>';
             }
             echo '</div>';
+
+            // Customer order actions. Every POST handler rechecks eligibility under FOR UPDATE.
+            $cancelRequest = row('SELECT reason,status,admin_note,created_at FROM tbl_order_cancel_requests WHERE order_id=?',[(int)$order['id']]);
+            $actions = customer_order_action_options($order);
+            if ($curStatus !== 'COMPLETED' && $curStatus !== 'CANCELLED') {
+                echo '<section class="order-action-panel"><h3>Thay đổi hoặc hủy đơn hàng</h3>';
+                if ($cancelRequest && $cancelRequest['status']==='PENDING') {
+                    echo '<div class="payment-status-note"><strong>Yêu cầu hủy đang chờ xử lý</strong><p>Đã gửi lúc '.h($cancelRequest['created_at']).'. Cửa hàng sẽ xem xét; đơn chưa bị hủy. Lý do: '.h($cancelRequest['reason']).'</p></div>';
+                } elseif ($cancelRequest && $cancelRequest['status']==='DECLINED') {
+                    echo '<div class="payment-alert"><strong>Yêu cầu hủy chưa được chấp thuận</strong><p>'.h($cancelRequest['admin_note']).'. Vui lòng liên hệ cửa hàng nếu cần hỗ trợ thêm.</p></div>';
+                } elseif ($actions['can_cancel'] || $actions['can_request_cancel']) {
+                    echo '<p class="hint">'.($actions['can_cancel']
+                        ? 'Bạn có thể tự hủy ngay vì đơn chưa được xác nhận và chưa báo chuyển khoản. Hủy sẽ hoàn lại tồn kho.'
+                        : 'Đơn đã được xử lý hoặc liên quan đến thanh toán. Bạn chỉ có thể gửi yêu cầu hủy; cửa hàng sẽ quyết định sau khi kiểm tra.').'</p>';
+                    echo '<form method="post" action="'.h(project_url('index.php')).'" class="order-action-form">'.csrf_field();
+                    echo '<input type="hidden" name="action" value="customer_cancel_order"><input type="hidden" name="order_code" value="'.h($code).'">';
+                    echo '<label class="field-group"><span>Lý do hủy / yêu cầu hủy</span><select class="field" name="cancel_reason" required>';
+                    echo '<option value="">-- Chọn lý do --</option>';
+                    foreach (['Đặt nhầm đơn hàng','Muốn thay đổi sản phẩm','Muốn thay đổi phương thức thanh toán','Không còn nhu cầu mua','Lý do khác - vui lòng liên hệ CSKH'] as $reason) {
+                        echo '<option value="'.h($reason).'">'.h($reason).'</option>';
+                    }
+                    echo '</select></label>';
+                    echo '<button type="submit" class="button button--danger" data-confirm="'.($actions['can_cancel']
+                        ? 'Bạn chắc chắn muốn hủy đơn ngay? Tồn kho sẽ được hoàn lại.'
+                        : 'Gửi yêu cầu hủy đến Admin? Đơn hàng CHƯA bị hủy cho đến khi được duyệt.').'">'
+                        .($actions['can_cancel']?'Hủy đơn hàng':'Gửi yêu cầu hủy đơn').'</button></form>';
+                }
+                if ($actions['can_change_payment'] && (!$cancelRequest || $cancelRequest['status']!=='PENDING')) {
+                    $nextMethod = $order['payment_method']==='BANK'?'COD':'BANK';
+                    echo '<div class="order-action-divider"></div><h3>Đổi phương thức thanh toán</h3>';
+                    echo '<p class="hint">Chỉ đổi khi đơn chưa được xử lý hoặc báo chuyển khoản. Nếu đã chuyển tiền theo QR trước đó, không sử dụng chức năng này — hãy liên hệ cửa hàng để đối soát.</p>';
+                    echo '<form method="post" action="'.h(project_url('index.php')).'" class="order-action-form">'.csrf_field();
+                    echo '<input type="hidden" name="action" value="customer_change_payment"><input type="hidden" name="order_code" value="'.h($code).'">';
+                    echo '<input type="hidden" name="payment_method" value="'.h($nextMethod).'">';
+                    echo '<label class="payment-check"><input type="checkbox" name="not_transferred" value="1" required> Tôi xác nhận chưa chuyển khoản cho đơn này.</label>';
+                    echo '<button type="submit" class="button button--light" data-confirm="Đổi sang '.h(payment_method_label($nextMethod)).'? Hãy đảm bảo chưa có tiền chuyển qua phương thức cũ.">Đổi sang '.h(payment_method_label($nextMethod)).'</button></form>';
+                }
+                if ($curStatus==='SHIPPING') echo '<p class="hint">Đơn đã bàn giao vận chuyển. Nếu muốn ngừng nhận hoặc hoàn trả, vui lòng liên hệ CSKH.</p>';
+                echo '</section>';
+            }
 
             // Shipping / tracking block (real data only)
             echo '<div data-order-shipping-slot>';
