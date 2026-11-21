@@ -66,27 +66,58 @@ try {
                 $name=trim((string)($_POST['name']??''));
                 $sku=trim((string)($_POST['sku']??''));
                 $category=as_int($_POST['category']??0);
-                $price=as_int($_POST['price']??-1,0,2000000000);
+                $price=as_int($_POST['price']??-1,1,2000000000);
                 $stock=as_int($_POST['stock']??-1,0,1000000);
                 $summary=trim((string)($_POST['summary']??''));
                 $description=trim((string)($_POST['description']??''));
                 $visible=(int)(($_POST['visible']??'0')==='1');
                 if (mb_strlen($name)<3 || mb_strlen($name)>250 || mb_strlen($sku)<1 || mb_strlen($sku)>100 ||
                     mb_strlen($summary)>10000 || mb_strlen($description)>200000) throw new DomainException('Thông tin sản phẩm vượt giới hạn.');
-                if (!row('SELECT id_danhmuc FROM tbl_danhmuc WHERE id_danhmuc=?',[$category])) throw new DomainException('Danh mục không tồn tại.');
+                $categoryData=row('SELECT tendanhmuc FROM tbl_danhmuc WHERE id_danhmuc=?',[$category]);
+                if (!$categoryData) throw new DomainException('Danh mục không tồn tại.');
+                $isPhone=is_phone_product($categoryData);
+                $capacityPrices=[];
+                if ($isPhone) {
+                    foreach (['256GB','512GB','1TB'] as $capacity) {
+                        $raw=trim((string)($_POST['variant_'.$capacity]??''));
+                        $capacityPrices[$capacity]=$raw===''?null:as_int($raw,1,2000000000);
+                    }
+                }
                 $existing=$id>0?row('SELECT hinhanh FROM tbl_sanpham WHERE id_sanpham=?',[$id]):null;
                 if ($id>0 && !$existing) throw new DomainException('Sản phẩm không còn tồn tại.');
                 $filename=save_product_upload($existing['hinhanh']??'');
                 if ($id===0 && $filename==='') throw new DomainException('Sản phẩm mới cần có ảnh.');
-                if ($id>0) {
-                    run('UPDATE tbl_sanpham SET tensanpham=?,masp=?,giasp=?,soluong=?,hinhanh=?,tomtat=?,noidung=?,tinhtrang=?,id_danhmuc=? WHERE id_sanpham=?',
-                        [$name,$sku,$price,$stock,$filename,$summary,$description,$visible,$category,$id]);
-                } else {
-                    run('INSERT INTO tbl_sanpham(tensanpham,masp,giasp,soluong,hinhanh,tomtat,noidung,tinhtrang,id_danhmuc)
-                         VALUES (?,?,?,?,?,?,?,?,?)',
-                        [$name,$sku,$price,$stock,$filename,$summary,$description,$visible,$category]);
+                db()->beginTransaction();
+                try {
+                    if ($id>0) {
+                        run('UPDATE tbl_sanpham SET tensanpham=?,masp=?,giasp=?,soluong=?,hinhanh=?,tomtat=?,noidung=?,tinhtrang=?,id_danhmuc=? WHERE id_sanpham=?',
+                            [$name,$sku,$price,$stock,$filename,$summary,$description,$visible,$category,$id]);
+                    } else {
+                        run('INSERT INTO tbl_sanpham(tensanpham,masp,giasp,soluong,hinhanh,tomtat,noidung,tinhtrang,id_danhmuc) VALUES (?,?,?,?,?,?,?,?,?)',
+                            [$name,$sku,$price,$stock,$filename,$summary,$description,$visible,$category]);
+                        $id=(int)db()->lastInsertId();
+                    }
+                    if ($isPhone) {
+                        // The catalog price is the approved 128GB price.
+                        run('INSERT INTO tbl_product_variants(product_id,variant_code,price,is_active) VALUES (?,?,?,1)
+                             ON DUPLICATE KEY UPDATE price=VALUES(price),is_active=1',[$id,'128GB',$price]);
+                        foreach ($capacityPrices as $capacity=>$capacityPrice) {
+                            if ($capacityPrice===null) {
+                                run('UPDATE tbl_product_variants SET is_active=0 WHERE product_id=? AND variant_code=?',[$id,$capacity]);
+                            } else {
+                                run('INSERT INTO tbl_product_variants(product_id,variant_code,price,is_active) VALUES (?,?,?,1)
+                                     ON DUPLICATE KEY UPDATE price=VALUES(price),is_active=1',[$id,$capacity,$capacityPrice]);
+                            }
+                        }
+                    } else {
+                        run('UPDATE tbl_product_variants SET is_active=0 WHERE product_id=?',[$id]);
+                    }
+                    db()->commit();
+                } catch (Throwable $e) {
+                    if (db()->inTransaction()) db()->rollBack();
+                    throw $e;
                 }
-                notice('Đã lưu sản phẩm.','success');
+                notice('Đã lưu sản phẩm và giá các dung lượng.','success');
                 redirect_to(admin_to('products'));
             case 'hide_product':
                 $id=as_int($_POST['id']??0);
@@ -314,7 +345,15 @@ elseif ($page==='product_form') {
     }
     echo '</select></label><label class="field-group">Mô tả ngắn <textarea class="field" name="summary" maxlength="10000">'.h($p['tomtat']??'').'</textarea></label>';
     echo '<label class="field-group">Nội dung <textarea class="field" name="description" rows="9" maxlength="200000">'.h(strip_tags($p['noidung']??'')).'</textarea></label></div><div>';
-    echo '<label class="field-group">Giá bán (VND) <input class="field" type="number" min="0" max="2000000000" name="price" required value="'.h($p['giasp']??'').'"></label>';
+    echo '<label class="field-group">Giá gốc / 128GB (VND) <input class="field" type="number" min="1" max="2000000000" name="price" required value="'.h($p['giasp']??'').'"></label>';
+    $dbVariants=$id?rows('SELECT variant_code,price FROM tbl_product_variants WHERE product_id=? AND is_active=1',[$id]):[];
+    $variantValues=[];
+    foreach ($dbVariants as $v) $variantValues[(string)$v['variant_code']]=(int)$v['price'];
+    echo '<div class="variant-admin"><h3>Giá từng dung lượng điện thoại</h3><p class="hint">Chỉ áp dụng khi sản phẩm thuộc danh mục Điện thoại. Mức giá để trống sẽ KHÔNG được bán. Không tự cộng thêm tiền từ giá gốc.</p>';
+    foreach (['256GB','512GB','1TB'] as $capacity) {
+        echo '<label class="field-group">'.h($capacity).' (VND) <input class="field" name="variant_'.h($capacity).'" type="number" min="1" max="2000000000" placeholder="Để trống nếu chưa có giá" value="'.h($variantValues[$capacity]??'').'"></label>';
+    }
+    echo '</div>';
     echo '<label class="field-group">Tồn kho <input class="field" type="number" min="0" max="1000000" name="stock" required value="'.h($p['soluong']??'0').'"></label>';
     echo '<label class="field-group">Trạng thái <select class="field" name="visible"><option value="1"'.((int)($p['tinhtrang']??1)===1?' selected':'').'>Đang bán</option><option value="0"'.((int)($p['tinhtrang']??1)===0?' selected':'').'>Tạm ẩn</option></select></label>';
     if (!empty($p['hinhanh'])) echo '<div class="image-preview"><img src="'.h(safe_image($p['hinhanh'])).'" alt="Ảnh hiện tại"></div>';
