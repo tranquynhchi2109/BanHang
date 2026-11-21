@@ -1,0 +1,27 @@
+name: PHP syntax checks
+on:
+  push:
+    branches:
+      - redesign/premium-mainline
+  pull_request:
+    branches:
+      - main
+jobs:
+  php-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+      - name: Lint active PHP entry points
+        run: |
+          php -l app.php
+          php -l index.php
+          php -l pages/header.php
+          php -l pages/main.php
+          php -l pages/footer.php
+          php -l admin/index.php
+          php -l admin/config/config.php

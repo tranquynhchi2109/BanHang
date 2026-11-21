@@ -1,3 +1,4 @@
+<?php
 try {
 echo '<main>';
 echo '<div class="container flash">'.(notices_html()??'').'</div>';

@@ -176,6 +176,7 @@ function variant_price(array $product, string $variant = 'BASE'): int
 {
     $base = (int)($product['giasp'] ?? 0);
     if (($product['tendanhmuc'] ?? '') !== 'Điện thoại') return $base;
+    if ($variant === 'BASE') $variant = '128GB';
     $extras = ['128GB'=>0, '256GB'=>2000000, '512GB'=>5000000, '1TB'=>10000000];
     if (!array_key_exists($variant, $extras)) throw new DomainException('Vui lòng chọn dung lượng hợp lệ.');
     return $base + $extras[$variant];

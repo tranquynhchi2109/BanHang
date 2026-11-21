@@ -34,6 +34,9 @@ This rebuild keeps the existing project folders and entry points:
 - Phone storage options (128GB, 256GB, 512GB and 1TB) are retained; variant prices are recalculated on the server and saved as order-item snapshots.
 - This project has not yet passed full integration, load or independent penetration testing. Do not describe it as production-audited until those tests are completed.
 
+## Code checks
+A GitHub Actions workflow runs PHP syntax checks for the active storefront, admin and database bridge entry points on pushes and pull requests.
+
 ## Before deployment
 - Configure HTTPS and a least-privilege MySQL account.
 - Change seeded credentials and set strong admin passwords.

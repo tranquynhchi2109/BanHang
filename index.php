@@ -150,6 +150,13 @@ try {
                                   WHERE p.id_sanpham IN ('.$placeholders.') ORDER BY p.id_sanpham FOR UPDATE',$ids);
                     $productMap=[];
                     foreach ($locked as $product) $productMap[(int)$product['id_sanpham']]=$product;
+                    foreach ($entries as &$entry) {
+                        $product=$productMap[$entry['id']]??null;
+                        if (!$product) throw new DomainException('Sản phẩm không còn tồn tại.');
+                        if ($product['tendanhmuc']==='Điện thoại' && $entry['variant']==='BASE') $entry['variant']='128GB';
+                        if ($product['tendanhmuc']!=='Điện thoại') $entry['variant']='BASE';
+                    }
+                    unset($entry);
                     foreach ($requested as $id=>$quantity) {
                         $product=$productMap[$id]??null;
                         if (!$product || (int)$product['tinhtrang']!==1 || (int)$product['soluong']<$quantity) {
