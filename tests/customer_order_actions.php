@@ -88,6 +88,7 @@ try {
     action_ok(customer_cancel_order($switch['code'],$ownerId,'Muốn hủy sau khi chuyển khoản')==='REQUESTED','reported BANK creates review request, not immediate cancel');
     action_ok(customer_cancel_order($switch['code'],$ownerId,'Muốn hủy sau khi chuyển khoản')==='REQUESTED','duplicate pending request idempotent');
     action_ok((int)row('SELECT COUNT(*) AS n FROM tbl_order_cancel_requests WHERE order_id=?',[$switch['id']])['n']===1,'exactly one cancellation request');
+    action_refuses(fn()=>report_bank_transfer($switch['code'],$ownerId,'Báo lại khi chờ hủy'),'bank reporting blocked during pending cancellation');
     action_ok(row('SELECT order_status FROM tbl_orders WHERE id=?',[$switch['id']])['order_status']==='PENDING','request does not prematurely cancel order');
     action_refuses(fn()=>update_order_status($switch['id'],1,'CONFIRMED'),'Admin cannot fulfill pending cancel request');
     action_refuses(fn()=>update_order_status($switch['id'],1,'CANCELLED'),'Admin cannot cancel reported bank transfer');
@@ -112,6 +113,17 @@ try {
     action_ok(customer_cancel_order($paid['code'],$ownerId,'Đã thanh toán nhưng muốn hủy')==='REQUESTED','paid BANK can request but not auto cancel');
     action_refuses(fn()=>update_order_status($paid['id'],1,'CANCELLED'),'paid BANK requires refund procedure');
     action_ok(row('SELECT order_status FROM tbl_orders WHERE id=?',[$paid['id']])['order_status']==='PENDING','paid BANK status preserved');
+
+    // 5: overdue manual expiry also resolves an outstanding customer cancellation request.
+    $expired=$makeOrder('EXP','BANK');
+    report_bank_transfer($expired['code'],$ownerId,'Cần kiểm tra ngân hàng');
+    reject_bank_report($expired['id'],1,'Đã kiểm tra sao kê nhưng chưa thấy tiền.');
+    action_ok(customer_cancel_order($expired['code'],$ownerId,'Không còn nhu cầu mua')==='REQUESTED','previous bank report needs approval');
+    run('UPDATE tbl_orders SET created_at=NOW()-INTERVAL 2 DAY WHERE id=?',[$expired['id']]);
+    expire_unpaid_bank_order($expired['id'],1);
+    action_ok(row('SELECT status FROM tbl_order_cancel_requests WHERE order_id=?',[$expired['id']])['status']==='APPROVED','manual expiry resolves pending cancel request');
+    action_ok(row('SELECT order_status FROM tbl_orders WHERE id=?',[$expired['id']])['order_status']==='CANCELLED','manual expiry cancels order');
+    action_ok((int)row("SELECT COUNT(*) AS n FROM tbl_inventory_movements WHERE order_id=? AND movement_type='ORDER_CANCEL_RESTORE'",[$expired['id']])['n']===1,'manual expiry restored stock once');
 
     echo "Customer order action tests PASSED\n";
 } finally {
