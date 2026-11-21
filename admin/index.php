@@ -665,7 +665,7 @@ elseif ($page==='payments') {
 elseif ($page==='orders') {
     admin_title('Quản lý đơn hàng','Tìm kiếm, lọc và cập nhật tiến độ xử lý đơn hàng.');
     $pendingCancelCount=(int)(row("SELECT COUNT(*) AS n FROM tbl_order_cancel_requests WHERE status='PENDING'")['n']??0);
-    if ($pendingCancelCount>0) echo '<div class="alert info">📩 Có <strong>'.$pendingCancelCount.'</strong> yêu cầu hủy đang chờ duyệt. Kiểm tra đơn hàng trước khi tiếp tục xác nhận/giao hàng.</div>';
+    if ($pendingCancelCount>0) echo '<div class="alert info">📩 Có <strong>'.$pendingCancelCount.'</strong> yêu cầu hủy đang chờ duyệt. <a class="link-blue" href="'.admin_to('orders',['cancel'=>'pending']).'">Xem yêu cầu hủy →</a></div>';
     $status=(string)($_GET['status']??'');
     $method=(string)($_GET['method']??'');
     $q=trim((string)($_GET['q']??''));
@@ -674,6 +674,8 @@ elseif ($page==='orders') {
     $curPage=max(1,min(200,(int)($_GET['p']??1)));
     $perPage=20;$offset=($curPage-1)*$perPage;
     $where=[];$params=[];
+    $cancelFilter=(string)($_GET['cancel']??'');
+    if ($cancelFilter==='pending') $where[]="EXISTS (SELECT 1 FROM tbl_order_cancel_requests cr WHERE cr.order_id=tbl_orders.id AND cr.status='PENDING')";
     if (in_array($status,['PENDING','CONFIRMED','PREPARING','SHIPPING','COMPLETED','CANCELLED'],true)) {
         $where[]='order_status=?';$params[]=$status;
     } else $status='';
@@ -708,7 +710,7 @@ elseif ($page==='orders') {
     admin_table_start(['Mã đơn','Khách hàng','Ngày đặt','Tổng tiền','Thanh toán','Trạng thái đơn','Vận đơn']);
     foreach ($orders as $o) {
         $payState=payment_state_summary($o);
-        echo '<tr><td><a class="link-blue" href="'.admin_to('order',['id'=>$o['id']]).'"><strong>'.h($o['order_code']).'</strong></a></td>';
+        echo '<tr><td><a class="link-blue" href="'.admin_to('order',['id'=>$o['id']]).'"><strong>'.h($o['order_code']).'</strong></a>'.((int)$o['cancel_pending']>0?'<br><span class="status-pill status-pill--warning">📩 Chờ duyệt hủy</span>':'').'</td>';
         echo '<td>'.h($o['customer_name']).'<br><small>'.h($o['phone']).'</small></td>';
         echo '<td>'.h($o['created_at']).'</td>';
         echo '<td><strong>'.money((int)$o['total_amount']).'</strong></td>';
