@@ -1137,7 +1137,7 @@ elseif ($page==='settings') {
     if ($smtpErr===null) {
         echo '<form method="post" class="inline-form">'.csrf_field().'<input type="hidden" name="action" value="retry_email_outbox"><button type="submit" class="button button--light">Khôi phục email FAILED / job treo</button></form>';
         if ((int)($outboxCounts['skipped_n']??0)>0) {
-            echo '<form method="post" class="inline-form">'.csrf_field().'<input type="hidden" name="action" value="retry_skipped_email_outbox"><button type="submit" class="button button--light" data-confirm="Gửi lại tất cả email SKIPPED còn trong giới hạn thử? Hành động này có thể gửi email lịch sử tới khách hàng.">Gửi lại email SKIPPED đã chọn</button></form>';
+            echo '<form method="post" class="inline-form">'.csrf_field().'<input type="hidden" name="action" value="retry_skipped_email_outbox"><button type="submit" class="button button--light" data-confirm="Gửi lại tất cả email SKIPPED còn trong giới hạn thử? Hành động này có thể gửi email lịch sử tới khách hàng.">Gửi lại toàn bộ email SKIPPED đủ điều kiện</button></form>';
         }
     } else {
         echo '<p class="hint">Cần cấu hình SMTP hợp lệ trước khi khôi phục email FAILED hoặc gửi lại email SKIPPED.</p>';
