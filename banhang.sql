@@ -4,6 +4,7 @@
 -- For existing old v2_* tables: renames them to tbl_* if no name collisions.
 -- If an old and a new table coexist, the preflight fails: do not drop either.
 -- No dummy products, prices, accounts, credentials or private customer data.
+SET NAMES utf8mb4;
 CREATE DATABASE IF NOT EXISTS `web_mysqli` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE `web_mysqli`;
 

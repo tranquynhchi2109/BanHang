@@ -58,7 +58,7 @@
     });
   });
 
-  // Prevent accidental duplicate form submissions
+  // Prevent accidental duplicate form submissions (reset if restored from browser BFCache)
   document.querySelectorAll('form').forEach(form => {
     form.addEventListener('submit', event => {
       if (event.defaultPrevented) return;
@@ -68,6 +68,11 @@
       }
       if (typeof form.checkValidity === 'function' && !form.checkValidity()) return;
       form.dataset.submitting = 'true';
+    });
+  });
+  window.addEventListener('pageshow', () => {
+    document.querySelectorAll('form[data-submitting]').forEach(form => {
+      delete form.dataset.submitting;
     });
   });
 

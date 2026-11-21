@@ -337,6 +337,23 @@ function page_title(string $title,string $desc=''): void
 
 
 try {
+    // Auto-mark order notifications read BEFORE header renders bell badge (skip brand-new ORDER_CREATED within 5s of checkout)
+    if ($_SERVER['REQUEST_METHOD'] === 'GET' && $page === 'order') {
+        $activeUser = current_user();
+        $viewCode = trim((string)($_GET['code'] ?? ''));
+        if ($activeUser && $viewCode !== '') {
+            $owned = row('SELECT id FROM tbl_orders WHERE order_code=? AND user_id=? LIMIT 1', [$viewCode, (int)$activeUser['id_dangky']]);
+            if ($owned) {
+                run(
+                    "UPDATE tbl_notifications
+                     SET is_read=1, read_at=COALESCE(read_at, NOW())
+                     WHERE user_id=? AND order_id=? AND is_read=0
+                       AND NOT (notification_type='ORDER_CREATED' AND created_at >= NOW() - INTERVAL 5 SECOND)",
+                    [(int)$activeUser['id_dangky'], (int)$owned['id']]
+                );
+            }
+        }
+    }
     include __DIR__ . '/pages/header.php';
     include __DIR__ . '/pages/main.php';
     include __DIR__ . '/pages/footer.php';

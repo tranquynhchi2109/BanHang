@@ -269,14 +269,12 @@ elseif ($page==='orders' || $page==='order') {
         $order=row('SELECT * FROM tbl_orders WHERE order_code=? AND user_id=?',[$code,$user['id_dangky']]);
         if (!$order) { http_response_code(404);echo '<div class="surface">Không tìm thấy đơn hàng của bạn.</div>'; }
         else {
-            // Mark related unread notifications as read when customer opens this order
-            run('UPDATE tbl_notifications SET is_read=1, read_at=COALESCE(read_at, NOW()) WHERE user_id=? AND order_id=? AND is_read=0',
-                [(int)$user['id_dangky'],(int)$order['id']]);
             $payState=payment_state_summary($order);
             $history=rows('SELECT from_status,to_status,actor_type,note,created_at FROM tbl_order_status_history WHERE order_id=? AND is_public=1 ORDER BY id ASC',[(int)$order['id']]);
             $reached=[];
             foreach ($history as $hItem) {
-                $reached[(string)$hItem['to_status']]=(string)$hItem['created_at'];
+                $st=(string)$hItem['to_status'];
+                if (!isset($reached[$st])) $reached[$st]=(string)$hItem['created_at'];
             }
             $curStatus=(string)$order['order_status'];
             $steps=[

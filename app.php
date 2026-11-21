@@ -351,6 +351,10 @@ function order_status_label(string $status): string
         'SHIPPING' => 'Đang giao hàng',
         'COMPLETED' => 'Đã giao thành công',
         'CANCELLED' => 'Đã hủy',
+        'PAYMENT_VERIFIED' => 'Xác nhận thanh toán MB Bank',
+        'COD_PAID' => 'Xác nhận thu tiền COD',
+        'SHIPPING_UPDATED' => 'Cập nhật vận chuyển',
+        'MESSAGE' => 'Thông báo từ cửa hàng',
         default => $status,
     };
 }
@@ -725,7 +729,7 @@ function save_order_notes(int $orderId, int $adminId, array $data): void
             || ($carrier !== '' && $carrier !== (string)$order['shipping_carrier']);
         if ($trackingChanged) {
             $detail = trim(($carrier !== '' ? "ĐVVC: {$carrier}. " : '') . ($tracking !== '' ? "Mã vận đơn: {$tracking}." : ''));
-            record_order_history($orderId, (string)$order['order_status'], (string)$order['order_status'], 'ADMIN', $adminId, 'Cập nhật vận chuyển: ' . $detail, true);
+            record_order_history($orderId, null, 'SHIPPING_UPDATED', 'ADMIN', $adminId, 'Cập nhật vận chuyển: ' . $detail, true);
             create_notification(
                 (int)$order['user_id'],
                 $orderId,
@@ -764,7 +768,7 @@ function confirm_cod_payment(int $orderId, int $adminId, string $note = ''): voi
         );
         $detail = 'Admin xác nhận đã thu đủ tiền COD ' . money((int)$order['total_amount']) . ($note !== '' ? ' · ' . $note : '');
         payment_event($orderId, 'ADMIN_COD_PAID', 'ADMIN', $adminId, $detail, null);
-        record_order_history($orderId, (string)$order['order_status'], (string)$order['order_status'], 'ADMIN', $adminId, 'Đã xác nhận thanh toán COD.', true);
+        record_order_history($orderId, null, 'COD_PAID', 'ADMIN', $adminId, 'Đã xác nhận thanh toán COD.', true);
         create_notification(
             (int)$order['user_id'],
             $orderId,
@@ -849,8 +853,8 @@ function confirm_bank_transfer(int $orderId, int $adminId, string $reference, in
             'Admin đã đối soát đủ số tiền '.(string)$receivedAmount.' VND với sao kê MB Bank',$reference);
         record_order_history(
             $orderId,
-            (string)$order['order_status'],
-            (string)$order['order_status'],
+            null,
+            'PAYMENT_VERIFIED',
             'ADMIN',
             $adminId,
             'Đã đối soát và xác nhận nhận đủ ' . money($receivedAmount) . ' qua MB Bank.',
@@ -1120,7 +1124,7 @@ function form_error(?string $error): void
 {
     if ($error !== null) echo '<div class="alert danger">' . h($error) . '</div>';
 }
-function as_int(mixed $value, int $min = 1, int $max = 1000): int
+function as_int(mixed $value, int $min = 1, int $max = 2147483647): int
 {
     $number = filter_var($value, FILTER_VALIDATE_INT);
     if ($number === false || $number < $min || $number > $max) throw new DomainException('Giá trị không hợp lệ.');

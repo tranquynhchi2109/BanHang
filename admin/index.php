@@ -720,7 +720,7 @@ elseif ($page==='order') {
     } else {
         foreach ($hist as $hRow) {
             $tag=(int)$hRow['is_public']===1?'Công khai':'Nội bộ';
-            $fromTxt=$hRow['from_status']?order_status_label((string)$hRow['from_status']).' → ':'';
+            $fromTxt=($hRow['from_status'] && $hRow['from_status']!==$hRow['to_status'])?order_status_label((string)$hRow['from_status']).' → ':'';
             echo '<div class="payment-event"><strong>'.h($fromTxt.order_status_label((string)$hRow['to_status'])).'</strong> · <span class="badge">'.h($tag).'</span> · '.h($hRow['actor_type']).' #'.(int)$hRow['actor_id'].' · '.h($hRow['created_at']);
             if (trim((string)$hRow['note'])!=='') echo '<p>'.h($hRow['note']).'</p>';
             echo '</div>';
@@ -734,32 +734,39 @@ elseif ($page==='order') {
     echo '<p>Thanh toán: <strong>'.h(payment_method_label((string)$order['payment_method'])).'</strong> · <span class="status-pill status-pill--'.h($payState['tone']).'">'.h($payState['label']).'</span></p>';
 
     $transitions=order_status_transitions();
-    $allowedNext=[];
+    $forwardNext=[];
+    $canCancel=false;
     foreach ($transitions[$curStatus]??[] as $nextKey) {
-        if ($nextKey==='CANCELLED' && ($order['payment_status']==='PAID' || $order['payment_review_status']==='REPORTED')) continue;
-        if ($order['payment_method']==='BANK' && $order['payment_status']!=='PAID' && $nextKey!=='CANCELLED') continue;
-        $allowedNext[]=$nextKey;
+        if ($nextKey==='CANCELLED') {
+            if ($order['payment_status']!=='PAID' && $order['payment_review_status']!=='REPORTED') $canCancel=true;
+            continue;
+        }
+        if ($order['payment_method']==='BANK' && $order['payment_status']!=='PAID') continue;
+        $forwardNext[]=$nextKey;
     }
-    if ($allowedNext) {
+    if ($order['payment_method']==='BANK' && $order['payment_status']!=='PAID' && $curStatus==='PENDING') {
+        echo '<p class="payment-alert">Đơn chuyển khoản BANK phải được đối soát và xác nhận <strong>PAID</strong> bên dưới trước khi xác nhận hoặc giao hàng.</p>';
+    }
+    if ($forwardNext) {
         echo '<div class="payment-admin-form"><h3>Cập nhật tiến độ đơn hàng</h3>';
         echo '<form method="post">'.csrf_field().'<input type="hidden" name="action" value="order_status"><input type="hidden" name="id" value="'.$id.'">';
-        echo '<label class="field-group">Chuyển sang trạng thái mới<select class="field" name="status" required>';
-        foreach ($allowedNext as $nk) {
+        echo '<label class="field-group">Chuyển sang trạng thái tiếp theo<select class="field" name="status" required>';
+        foreach ($forwardNext as $nk) {
             echo '<option value="'.h($nk).'">'.h(order_status_label($nk)).'</option>';
         }
         echo '</select></label>';
-        if (in_array('SHIPPING',$allowedNext,true)) {
+        if (in_array('SHIPPING',$forwardNext,true)) {
             echo '<label class="field-group">Đơn vị vận chuyển (khi giao hàng)<input class="field" name="shipping_carrier" maxlength="100" value="'.h($order['shipping_carrier']??'').'" placeholder="VD: Giao Hàng Nhanh, GHTK..."></label>';
             echo '<label class="field-group">Mã vận đơn thực tế (nếu đã có)<input class="field" name="tracking_code" maxlength="100" value="'.h($order['tracking_code']??'').'" placeholder="Để trống nếu chưa có"></label>';
-        }
-        if (in_array('CANCELLED',$allowedNext,true)) {
-            echo '<label class="field-group">Lý do hủy (nếu chọn Đã hủy)<input class="field" name="cancel_reason" maxlength="300" placeholder="Nhập lý do hủy đơn..."></label>';
         }
         echo '<label class="field-group">Ghi chú gửi khách (tùy chọn)<input class="field" name="customer_note" maxlength="500" placeholder="Thông tin hiển thị trong thông báo cho khách"></label>';
         echo '<label class="field-group">Ghi chú nội bộ (tùy chọn)<input class="field" name="admin_note" maxlength="500" placeholder="Chỉ Admin nhìn thấy"></label>';
         echo '<button type="submit" class="button full" data-confirm="Cập nhật trạng thái đơn hàng và gửi thông báo cho khách?">Cập nhật trạng thái đơn</button></form></div>';
-    } elseif ($order['payment_method']==='BANK' && $order['payment_status']!=='PAID' && $curStatus==='PENDING') {
-        echo '<p class="payment-alert">Đơn chuyển khoản BANK phải được đối soát và xác nhận <strong>PAID</strong> bên dưới trước khi xác nhận hoặc giao hàng.</p>';
+    }
+    if ($canCancel) {
+        echo '<form method="post" class="payment-reject-form">'.csrf_field().'<input type="hidden" name="action" value="order_status"><input type="hidden" name="id" value="'.$id.'"><input type="hidden" name="status" value="CANCELLED">';
+        echo '<label class="field-group">Lý do hủy đơn hàng<input class="field" name="cancel_reason" maxlength="300" placeholder="VD: Khách yêu cầu hủy, hết hàng..."></label>';
+        echo '<button type="submit" class="button button--danger full" data-confirm="Bạn chắc chắn muốn HỦY đơn hàng này và hoàn lại tồn kho?">Hủy đơn hàng &amp; hoàn kho</button></form>';
     }
 
     // COD explicit payment confirmation
