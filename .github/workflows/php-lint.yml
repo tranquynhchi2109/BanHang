@@ -54,6 +54,15 @@ jobs:
         run: |
           php -r 'require "app.php"; $p=row("SELECT p.*,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.id_sanpham=1"); if(variant_price($p,"128GB")!==27500000)exit(1);if(variant_price($p,"1TB")!==35900000)exit(2);echo "All storefront capacity prices come from DB\n";'
           php -r 'require "app.php"; run("UPDATE tbl_product_variants SET price=? WHERE product_id=? AND variant_code=?", [37600000,1,"1TB"]);$p=row("SELECT p.*,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.id_sanpham=1");if(variant_price($p,"1TB")!==37600000)exit(1);echo "Admin price override is read from DB\n";'
+      - name: Test manual bank reconciliation, duplicate protection and stock expiry
+        env:
+          DB_HOST: 127.0.0.1
+          DB_NAME: web_mysqli
+          DB_USER: root
+          DB_PASS: root
+        run: |
+          php -l tests/manual_payment.php
+          php tests/manual_payment.php
       - name: Verify upgrade from old v2 names preserves orders
         env:
           MYSQL_PWD: root
