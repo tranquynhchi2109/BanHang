@@ -269,3 +269,9 @@ td{font-size:12px}.timeline{display:flex;justify-content:space-between;gap:8px;f
 .variant-option{border:1px solid var(--line);border-radius:10px;padding:10px 15px;background:#fff;color:var(--muted);font-size:12px;font-weight:700}
 .variant-option.active{border-color:var(--blue);background:#edf3ff;color:var(--blue)}
 .cart-variant{display:inline-block;margin-top:5px;color:var(--muted);font-size:11px;font-weight:700}
+
+.variant-options{display:flex;flex-wrap:wrap;gap:10px}
+.variant-option{display:flex;flex-direction:column;gap:3px;text-align:center}
+.variant-option small{font-size:10px;white-space:nowrap}
+.variant-option.disabled{opacity:.47;cursor:not-allowed;background:#f4f6f8}
+.variant-picker>strong{margin-bottom:12px;display:block}

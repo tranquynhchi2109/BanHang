@@ -68,24 +68,32 @@ elseif ($page==='product') {
     $product=row('SELECT p.*,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON p.id_danhmuc=c.id_danhmuc WHERE p.id_sanpham=? AND p.tinhtrang=1',[$id]);
     if (!$product) {http_response_code(404);page_title('Không tìm thấy sản phẩm');}
     else {
-        $isPhone=($product['tendanhmuc']==='Điện thoại');
+        $isPhone=is_phone_product($product);
         $variant=$isPhone?strtoupper((string)($_GET['variant']??'128GB')):'BASE';
+        $prices=$isPhone?available_variants($id):[];
         if ($isPhone && !in_array($variant,['128GB','256GB','512GB','1TB'],true)) $variant='128GB';
-        $displayPrice=variant_price($product,$variant);
+        $displayPrice=$isPhone?($prices[$variant]??null):(int)$product['giasp'];
         echo '<div class="container section"><p class="breadcrumb"><a href="'.h(project_url('index.php')).'">Trang chủ</a> / '.h($product['tendanhmuc']).' / '.h($product['tensanpham']).'</p>';
         echo '<div class="product-detail"><div class="product-detail__photo"><img src="'.h(safe_image($product['hinhanh'])).'" alt="'.h($product['tensanpham']).'"></div><div class="product-detail__info"><span class="badge">CHÍNH HÃNG</span>';
-        echo '<h1>'.h($product['tensanpham']).'</h1><p class="rating">★ 4.9 <span>· Bảo hành theo quy định cửa hàng</span></p><p class="detail-price">'.money($displayPrice).'</p>';
+        echo '<h1>'.h($product['tensanpham']).'</h1><p class="rating">★ 4.9 <span>· Giá được đối chiếu với cơ sở dữ liệu</span></p>';
+        echo '<p class="detail-price">'.($displayPrice===null?'Dung lượng chưa có giá bán':money($displayPrice)).'</p>';
         if ($isPhone) {
             echo '<div class="variant-picker"><strong>Chọn dung lượng</strong><div class="variant-options">';
             foreach (['128GB','256GB','512GB','1TB'] as $option) {
-                echo '<a class="variant-option'.($variant===$option?' active':'').'" href="'.link_to('product',['id'=>$id,'variant'=>$option]).'">'.h($option).'</a>';
+                if (isset($prices[$option])) {
+                    echo '<a class="variant-option'.($variant===$option?' active':'').'" href="'.link_to('product',['id'=>$id,'variant'=>$option]).'">'.h($option).'<small>'.money($prices[$option]).'</small></a>';
+                } else {
+                    echo '<span class="variant-option disabled" title="Chưa có giá được cửa hàng xác nhận">'.h($option).'<small>Chưa mở bán</small></span>';
+                }
             }
             echo '</div></div>';
         }
-        echo '<p>'.nl2br(h(strip_tags(str_ireplace(['<br>','<br/>','<br />'],"\\n",(string)$product['tomtat'])))).'</p><p><strong>Tình trạng:</strong> '.((int)$product['soluong']>0?'Còn '.(int)$product['soluong'].' sản phẩm':'Tạm hết hàng').'</p>';
-        if ((int)$product['soluong']>0) {
+        echo '<p>'.nl2br(h(strip_tags(str_ireplace(['<br>','<br/>','<br />'],"\n",(string)$product['tomtat'])))).'</p><p><strong>Tình trạng:</strong> '.((int)$product['soluong']>0?'Còn '.(int)$product['soluong'].' sản phẩm':'Tạm hết hàng').'</p>';
+        if ((int)$product['soluong']>0 && $displayPrice!==null && $displayPrice>0) {
             echo '<form action="'.h(project_url('index.php')).'" method="post" class="purchase-form">'.csrf_field().'<input type="hidden" name="action" value="add_cart"><input type="hidden" name="product_id" value="'.$id.'"><input type="hidden" name="variant" value="'.h($variant).'">';
             echo '<label>Số lượng <input class="field qty" name="qty" type="number" min="1" max="'.min((int)$product['soluong'],20).'" value="1" required></label><button class="button">＋ Thêm vào giỏ hàng</button></form>';
+        } else if ($displayPrice===null) {
+            echo '<p class="hint">Cửa hàng chưa xác nhận giá dung lượng này. Vui lòng chọn phiên bản có giá hoặc liên hệ cửa hàng.</p>';
         }
         echo '<div class="product-services">✓ Thanh toán bảo mật &nbsp; ✓ Có theo dõi đơn &nbsp; ✓ Tư vấn hỗ trợ</div></div></div>';
         echo '<section class="section"><h2>Mô tả sản phẩm</h2><div class="surface prose">'.nl2br(h(strip_tags((string)$product['noidung']))).'</div></section>';
@@ -96,7 +104,13 @@ elseif ($page==='product') {
 }
 elseif ($page==='cart' || $page==='checkout') {
     $items=select_cart_items();$total=array_sum(array_column($items,'cart_total'));
+    $hasMissingPrice=false;
+    foreach ($items as $item) {if ($item['cart_price_error']) $hasMissingPrice=true;}
     if ($page==='checkout' && !$items) redirect_to(link_to('cart'));
+    if ($page==='checkout' && $hasMissingPrice) {
+        notice('Một số dung lượng trong giỏ chưa có giá bán. Vui lòng xóa sản phẩm chưa có giá rồi chọn lại.', 'danger');
+        redirect_to(link_to('cart'));
+    }
     if ($page==='checkout') $user=require_customer();
     page_title($page==='cart'?'Giỏ hàng của bạn':'Thanh toán đơn hàng','Mọi thông tin được xác minh lại trên máy chủ.');
     echo '<div class="container section"><div class="checkout-layout"><section class="surface cart-items">';
@@ -107,11 +121,11 @@ elseif ($page==='cart' || $page==='checkout') {
             $id=(int)$item['id_sanpham'];
             echo '<div class="cart-item"><img src="'.h(safe_image($item['hinhanh'])).'" alt=""><div><strong>'.h($item['tensanpham']).'</strong>';
             if ($item['variant_label']!=='') echo '<small class="cart-variant">'.h($item['variant_label']).'</small>';
-            echo '<p>'.money((int)$item['cart_unit_price']).'</p></div>';
+            echo '<p>'.($item['cart_price_error']?'Dung lượng chưa có giá · vui lòng xóa khỏi giỏ':money((int)$item['cart_unit_price'])).'</p></div>';
             echo '<form method="post">'.csrf_field().'<input type="hidden" name="action" value="cart_update"><input type="hidden" name="product_id" value="'.$id.'"><input type="hidden" name="cart_key" value="'.h($item['cart_key']).'"><input class="field qty" name="qty" type="number" min="0" max="20" value="'.(int)$item['cart_qty'].'"><button class="button button--light">Cập nhật</button></form></div>';
         }
     } else {
-        echo '<h2>Thông tin giao hàng</h2><form action="index.php" method="post" id="checkout-form">'.csrf_field().'<input type="hidden" name="action" value="checkout">';
+        echo '<h2>Thông tin giao hàng</h2><form action="index.php" method="post" id="checkout-form">'.csrf_field().'<input type="hidden" name="action" value="checkout"><input type="hidden" name="expected_total" value="'.(int)$total.'">';
         input_field('name','Họ và tên',$user['tenkhachhang'],'text','required maxlength="160"');
         input_field('phone','Số điện thoại',$user['dienthoai'],'tel','required maxlength="25"');
         echo '<label class="field-group"><span>Địa chỉ nhận hàng</span><textarea class="field" name="address" minlength="10" maxlength="500" required>'.h($user['diachi']).'</textarea></label>';
@@ -121,9 +135,10 @@ elseif ($page==='cart' || $page==='checkout') {
         echo '<p class="hint">VietQR hiển thị thông tin chuyển khoản, không tự xác nhận tiền đã nhận.</p></form>';
     }
     echo '</section><aside class="surface order-summary"><h2>Tóm tắt đơn hàng</h2>';
-    foreach ($items as $item) echo '<div class="summary-line"><span>'.h($item['tensanpham']).($item['variant_label']!==''?' · '.h($item['variant_label']):'').' × '.(int)$item['cart_qty'].'</span><strong>'.money((int)$item['cart_total']).'</strong></div>';
-    echo '<hr><div class="summary-total"><span>Tổng tiền</span><strong>'.money((int)$total).'</strong></div>';
-    if ($items) {
+    foreach ($items as $item) echo '<div class="summary-line"><span>'.h($item['tensanpham']).($item['variant_label']!==''?' · '.h($item['variant_label']):'').' × '.(int)$item['cart_qty'].'</span><strong>'.($item['cart_price_error']?'Chưa có giá':money((int)$item['cart_total'])).'</strong></div>';
+    echo '<hr><div class="summary-total"><span>Tổng tiền</span><strong>'.($hasMissingPrice?'Chưa thể tính':money((int)$total)).'</strong></div>';
+    if ($hasMissingPrice) echo '<p class="hint">Có sản phẩm chưa được định giá. Xóa dòng đó khỏi giỏ trước khi thanh toán.</p>';
+    if ($items && !$hasMissingPrice) {
         if ($page==='checkout') echo '<button form="checkout-form" class="button full">Xác nhận đặt hàng →</button>';
         else echo '<a class="button full" href="'.link_to('checkout').'">Tiến hành thanh toán →</a>';
     }
