@@ -35,7 +35,7 @@ This rebuild keeps the existing project folders and entry points:
 - This project has not yet passed full integration, load or independent penetration testing. Do not describe it as production-audited until those tests are completed.
 
 ## Code checks
-A GitHub Actions workflow runs PHP syntax checks for the active storefront, admin and database bridge entry points on pushes and pull requests.
+A GitHub Actions workflow runs PHP syntax checks and imports the legacy schema plus the additive migration against MySQL 8 on pushes and pull requests.
 
 ## Before deployment
 - Configure HTTPS and a least-privilege MySQL account.

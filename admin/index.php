@@ -152,15 +152,18 @@ try {
                     'bank_id'=>strtoupper(trim((string)($_POST['bank_id']??''))),
                     'bank_account'=>trim((string)($_POST['bank_account']??'')),
                     'bank_name'=>trim((string)($_POST['bank_name']??'')),
+                    'contact_info'=>trim((string)($_POST['contact_info']??'')),
                 ];
                 if (mb_strlen($values['store_name'])<2 || mb_strlen($values['store_name'])>100 ||
                     ($values['support_email']!=='' && !filter_var($values['support_email'],FILTER_VALIDATE_EMAIL)) ||
                     ($values['bank_id']!=='' && !preg_match('/^[A-Z0-9]{2,15}$/',$values['bank_id'])) ||
                     ($values['bank_account']!=='' && !preg_match('/^[0-9]{6,24}$/',$values['bank_account'])) ||
-                    mb_strlen($values['bank_name'])>150) throw new DomainException('Cấu hình ngân hàng hoặc cửa hàng không hợp lệ.');
+                    mb_strlen($values['bank_name'])>150 || mb_strlen($values['contact_info'])>2000) throw new DomainException('Cấu hình ngân hàng hoặc cửa hàng không hợp lệ.');
                 foreach ($values as $key=>$value) {
+                    if ($key==='contact_info') continue;
                     run('INSERT INTO v2_settings(setting_key,setting_value) VALUES(?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)',[$key,$value]);
                 }
+                run('INSERT INTO tbl_lienhe(id,thongtinlienhe) VALUES (1,?) ON DUPLICATE KEY UPDATE thongtinlienhe=VALUES(thongtinlienhe)',[$values['contact_info']]);
                 notice('Đã lưu cấu hình cửa hàng.','success');
                 redirect_to(admin_to('settings'));
             case 'save_article':
@@ -476,7 +479,10 @@ elseif ($page==='settings') {
     echo '<label class="field-group">Mã ngân hàng <input class="field" name="bank_id" maxlength="15" placeholder="MB hoặc 970422" value="'.h(setting('bank_id')).'"></label>';
     echo '<label class="field-group">Số tài khoản <input class="field" name="bank_account" maxlength="24" value="'.h(setting('bank_account')).'"></label>';
     echo '<label class="field-group">Tên chủ tài khoản <input class="field" name="bank_name" maxlength="150" value="'.h(setting('bank_name')).'"></label>';
-    echo '<p class="hint">Đơn BANK hiển thị QR có số tiền và mã đơn. Quản trị viên phải đối soát chuyển khoản thật.</p></div></div><button class="button" type="submit">Lưu cấu hình</button></form>';
+    echo '<p class="hint">Đơn BANK hiển thị QR có số tiền và mã đơn. Quản trị viên phải đối soát chuyển khoản thật.</p></div></div>';
+    $contactRow=row('SELECT thongtinlienhe FROM tbl_lienhe WHERE id=1');
+    echo '<label class="field-group">Thông tin liên hệ hiển thị trên website <textarea class="field" name="contact_info" rows="5" maxlength="2000">'.h(strip_tags((string)($contactRow['thongtinlienhe']??''))).'</textarea></label>';
+    echo '<button class="button" type="submit">Lưu cấu hình</button></form>';
 }
 admin_page_foot();
 } catch (Throwable $e) {

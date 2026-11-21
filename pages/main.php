@@ -234,7 +234,7 @@ elseif ($page==='news' || $page==='article') {
 elseif ($page==='contact') {
     page_title('Liên hệ','Kết nối với BanHang để được tư vấn và hỗ trợ.');
     $contact = row('SELECT thongtinlienhe FROM tbl_lienhe WHERE id=1');
-    echo '<div class="container section"><div class="surface prose">'.h(strip_tags((string)($contact['thongtinlienhe'] ?? 'Thông tin liên hệ đang được cập nhật.'))).'</div></div>';
+    echo '<div class="container section"><div class="surface prose">'.nl2br(h(strip_tags((string)($contact['thongtinlienhe'] ?? 'Thông tin liên hệ đang được cập nhật.')))).'</div></div>';
 }
 echo '</main>';
 } catch (Throwable $e) {
