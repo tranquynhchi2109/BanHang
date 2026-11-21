@@ -56,6 +56,7 @@ jobs:
           php -l tests/manual_payment.php
           php -l tests/order_notifications.php
           php -l tests/critical_hardening.php
+          php -l tests/customer_order_actions.php
       - name: Create isolated test database and re-import SQL idempotently
         run: |
           mysql -h127.0.0.1 -uroot -e "CREATE DATABASE IF NOT EXISTS web_mysqli_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
@@ -86,6 +87,7 @@ jobs:
           php tests/manual_payment.php
           php tests/order_notifications.php
           php tests/critical_hardening.php
+          php tests/customer_order_actions.php
           php tests/order_notifications.php
           php tests/manual_payment.php
       - name: Verify upgrade from old v2 names preserves orders
