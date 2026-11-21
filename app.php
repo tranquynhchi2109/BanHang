@@ -712,6 +712,8 @@ function expire_unpaid_bank_order(int $orderId, int $adminId): void
         }
         $reason = 'Đơn hàng chuyển khoản chưa thanh toán quá 24 giờ và đã được hủy thủ công.';
         run("UPDATE tbl_orders SET order_status='CANCELLED', cancel_reason=? WHERE id=?",[$reason, $orderId]);
+        run("UPDATE tbl_order_cancel_requests SET status='APPROVED',admin_note=?,resolved_at=NOW(),resolved_by=? WHERE order_id=? AND status='PENDING'",
+            ['Đơn quá hạn thanh toán đã được hủy thủ công và hoàn kho.',$adminId,$orderId]);
         payment_event($orderId,'ADMIN_EXPIRED','ADMIN',$adminId,
             'Hủy thủ công đơn chưa thanh toán quá 24 giờ; đã hoàn tồn kho.');
         record_order_history($orderId, 'PENDING', 'CANCELLED', 'ADMIN', $adminId, $reason, true);
