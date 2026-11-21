@@ -449,8 +449,45 @@ elseif ($page==='order') {
         if ($order['payment_method']==='BANK' && $order['payment_status']!=='PAID' && $status!=='CANCELLED') continue;
         echo '<form method="post" class="inline-form">'.csrf_field().'<input type="hidden" name="action" value="order_status"><input type="hidden" name="id" value="'.$id.'"><input type="hidden" name="status" value="'.h($status).'"><button class="button '.($status==='CANCELLED'?'button--danger':'button--light').'" '.($status==='CANCELLED'?'data-confirm="Hủy đơn và hoàn lại tồn kho?"':'').'>'.h($label).'</button></form>';
     }
-    if ($order['payment_method']==='BANK' && $order['payment_status']==='UNPAID' && $order['order_status']!=='CANCELLED')
-        echo '<hr><p class="hint">Chỉ bấm sau khi kiểm tra ngân hàng đã nhận tiền.</p><form method="post">'.csrf_field().'<input type="hidden" name="action" value="mark_paid"><input type="hidden" name="id" value="'.$id.'"><button class="button" data-confirm="Đã đối soát và nhận đủ số tiền?">Xác nhận đã nhận chuyển khoản</button></form>';
+    if ($order['payment_method']==='BANK') {
+        echo '<hr><h3>Đối soát chuyển khoản VietQR (thủ công)</h3>';
+        echo '<p>Ngân hàng: <strong>MB Bank</strong> · Số tài khoản: <strong>'.h(setting('bank_account')).'</strong></p>';
+        echo '<p>Mã chuyển khoản: <code>BANHANG '.h($order['order_code']).'</code></p>';
+        echo '<p>Tiền cần nhận: <strong>'.money((int)$order['total_amount']).'</strong></p>';
+        $reviewLabel=['NONE'=>'Chưa có báo cáo','REPORTED'=>'Khách báo đã chuyển khoản','REJECTED'=>'Cần kiểm tra lại','VERIFIED'=>'Đã đối soát'][$order['payment_review_status']]??$order['payment_review_status'];
+        echo '<p>Đối soát: <strong>'.h($reviewLabel).'</strong></p>';
+        if ($order['payment_reported_at']) echo '<p>Khách báo lúc: '.h($order['payment_reported_at']).'</p>';
+        if ($order['customer_transfer_note']) echo '<p>Ghi chú khách: '.h($order['customer_transfer_note']).'</p>';
+        if ($order['payment_status']==='PAID') {
+            echo '<p class="payment-status-note">Đã đối soát và nhận đủ tiền.</p>';
+            echo '<p>Mã giao dịch MB Bank: <strong>'.h($order['bank_reference']??'').'</strong></p>';
+            echo '<p>Xác nhận lúc: '.h($order['payment_verified_at']??'').'</p>';
+        } elseif ($order['order_status']!=='CANCELLED') {
+            echo '<div class="payment-admin-form"><p class="hint">Chỉ xác nhận sau khi kiểm tra TIỀN VÀO trong sao kê MB Bank. Biên lai/ảnh hoặc việc khách bấm nút không chứng minh đã nhận tiền.</p>';
+            echo '<form method="post">'.csrf_field().'<input type="hidden" name="action" value="mark_paid"><input type="hidden" name="id" value="'.$id.'">';
+            echo '<label class="field-group">Mã giao dịch trên sao kê MB Bank <input class="field" type="text" name="bank_reference" maxlength="120" minlength="5" required placeholder="Mã giao dịch duy nhất"></label>';
+            echo '<label class="field-group">Số tiền thực nhận (VND) <input class="field" type="number" min="1" max="1000000000000" name="received_amount" required placeholder="Nhập số tiền đã nhận"></label>';
+            echo '<label class="payment-check"><input type="checkbox" name="verified_receipt" value="1" required> Tôi đã kiểm tra đúng tài khoản nhận, mã đơn, số tiền và giao dịch tiền vào thực tế.</label>';
+            echo '<button type="submit" class="button" data-confirm="Bạn đã đối soát xong tiền vào MB Bank?">Xác nhận PAID sau đối soát</button></form></div>';
+            if ($order['payment_review_status']==='REPORTED') {
+                echo '<form method="post" class="payment-reject-form">'.csrf_field().'<input type="hidden" name="action" value="reject_bank_report"><input type="hidden" name="id" value="'.$id.'">';
+                echo '<label class="field-group">Lý do chưa xác minh được <textarea class="field" name="reason" maxlength="300" minlength="5" required placeholder="Không thấy giao dịch, nội dung không khớp..."></textarea></label>';
+                echo '<button type="submit" class="button button--light" data-confirm="Yêu cầu khách kiểm tra lại giao dịch?">Báo chưa tìm thấy giao dịch</button></form>';
+            }
+            if ($order['order_status']==='PENDING' && (int)$order['past_deadline']===1 && $order['payment_review_status']!=='REPORTED') {
+                echo '<form method="post" class="payment-expire-form">'.csrf_field().'<input type="hidden" name="action" value="expire_unpaid"><input type="hidden" name="id" value="'.$id.'">';
+                echo '<p class="hint">Đơn chưa thanh toán quá 24 giờ. Chỉ hủy khi chắc chắn không có khoản chuyển tiền đang cần đối soát. Hủy sẽ hoàn tồn kho.</p>';
+                echo '<button type="submit" class="button button--danger" data-confirm="Hủy đơn quá 24 giờ và hoàn kho? Kiểm tra MB Bank lần cuối trước khi tiếp tục.">Hủy thủ công đơn quá hạn</button></form>';
+            }
+        }
+        echo '<hr><h3>Nhật ký đối soát</h3>';
+        foreach (rows('SELECT event_type,actor_type,actor_id,detail,reference_code,created_at FROM tbl_payment_events WHERE order_id=? ORDER BY id DESC LIMIT 30',[$id]) as $event) {
+            echo '<div class="payment-event"><strong>'.h($event['event_type']).'</strong> · '.h($event['actor_type']).' #'.(int)$event['actor_id'].' · '.h($event['created_at']);
+            if ($event['detail']!=='') echo '<p>'.h($event['detail']).'</p>';
+            if ($event['reference_code']) echo '<small>Mã giao dịch: '.h($event['reference_code']).'</small>';
+            echo '</div>';
+        }
+    }
     echo '</div></div>';
 }
 elseif ($page==='legacy_orders') {

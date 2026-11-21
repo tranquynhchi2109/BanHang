@@ -60,3 +60,15 @@ và không có mức phụ thu ẩn trong PHP.
 - Với 5 mẫu demo thiếu ảnh tại máy, frontend trỏ đến hình đúng sản phẩm từ Samsung, Apple, ASUS, Sony và ảnh Anker A1384 được tra cứu trên nhà bán lẻ. Những ảnh này tải từ mạng, không được lưu vào database hoặc tự động tải xuống GitHub.
 - Trong sản phẩm thật, hãy upload ảnh đã được phép sử dụng tại trang Admin để ảnh hoạt động offline, tải ổn định và không phụ thuộc website thứ ba.
 - Cải thiện banner, danh mục, ảnh chi tiết, giỏ hàng và ảnh tin tức. Ảnh hỏng có ảnh minh họa danh mục thay thế.
+
+
+## VietQR thủ công (không cần API ngân hàng)
+
+1. Khách đặt đơn `BANK` để lấy QR MB Bank kèm số tiền và mã đơn. Trạng thái vẫn `UNPAID`.
+2. Khách chuyển khoản xong có thể bấm **Tôi đã chuyển khoản – gửi kiểm tra**. Website chỉ lưu báo cáo `REPORTED`, chưa tự nhận tiền hay đánh dấu đã thanh toán.
+3. **Admin → Thanh toán → Chờ đối soát**. Kiểm tra khoản **tiền vào thực tế** trên sao kê MB Bank: tài khoản nhận, số tiền, mã đơn, mã giao dịch.
+4. Nhập mã giao dịch ngân hàng (duy nhất) và số tiền thực nhận; xác nhận kiểm tra sao kê. Chỉ lúc này đơn chuyển sang `PAID`, đồng thời lưu thời gian, Admin xác nhận và nhật ký trong `tbl_payment_events`.
+5. Nếu khách báo nhưng chưa có giao dịch đối chiếu được, Admin bấm **Báo chưa tìm thấy giao dịch**. Khách có thể báo lại khi đã kiểm tra.
+6. Đơn `BANK` chưa `PAID` không được xác nhận/giao hàng. Đơn `PENDING` quá 24 giờ chưa thanh toán và không có báo cáo đang chờ có thể **hủy thủ công** trong Admin và hoàn lại số lượng kho. Không có job tự chạy hay auto-refund.
+7. Luôn **backup database** rồi import lại chỉ file `banhang.sql` mới để tạo các cột đối soát và bảng sự kiện trước khi kéo code PHP. Không cần API MB Bank, webhook hoặc OTP.
+8. Nút khách báo, ảnh chụp giao dịch và QR chỉ là thông tin; không phải bằng chứng ngân hàng đã nhận tiền. Nếu tiền đến sau khi đơn đã hủy thì liên hệ và xử lý hoàn tiền/thỏa thuận lại bằng tay.

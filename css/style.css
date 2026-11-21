@@ -290,3 +290,14 @@ td{font-size:12px}.timeline{display:flex;justify-content:space-between;gap:8px;f
  .category-photo img{width:96%;height:96%}
  .product-card__image img{width:94%;height:94%}
 }
+
+/* Manual VietQR payment and reconciliation. */
+.payment-status-note{background:#eef7ff;border:1px solid #cde6fa;padding:14px;border-radius:12px;margin:14px 0;color:#174869}
+.payment-status-note p{font-size:13px;line-height:1.55;margin-top:7px}
+.payment-alert{background:#fff8eb;border:1px solid #f5d49c;color:#885600;padding:12px;border-radius:11px}
+.payment-report-form,.payment-admin-form,.payment-reject-form,.payment-expire-form{margin-top:18px;padding-top:14px;border-top:1px solid #e7edf5}
+.payment-report-form .button{margin:10px 0 8px}
+.payment-check{display:flex;align-items:flex-start;gap:10px;font-size:13px;line-height:1.5;margin:12px 0 18px}
+.payment-check input{margin-top:3px;flex:none}
+.payment-event{border-bottom:1px solid #e7edf5;padding:12px 0;font-size:13px;line-height:1.5}
+.payment-event p{margin:4px 0;color:#566477}
