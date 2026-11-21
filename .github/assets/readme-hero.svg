@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">BanHang Tech Store — PHP and MySQL e-commerce</title>
+  <desc id="desc">A deep-navy tech storefront cover with neon teal and purple accents and abstract desktop and mobile shopping interfaces.</desc>
+  <defs>
+    <linearGradient id="base" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#080E25"/><stop offset=".54" stop-color="#121B40"/><stop offset="1" stop-color="#111335"/></linearGradient>
+    <linearGradient id="electric" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#30D5FA"/><stop offset=".5" stop-color="#6AE7D7"/><stop offset="1" stop-color="#A888FF"/></linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#243F74"/><stop offset="1" stop-color="#412A71"/></linearGradient>
+    <linearGradient id="item" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#59DDF1"/><stop offset="1" stop-color="#8566F3"/></linearGradient>
+    <radialGradient id="glow"><stop stop-color="#7159F1" stop-opacity=".45"/><stop offset="1" stop-color="#7159F1" stop-opacity="0"/></radialGradient>
+    <filter id="blur"><feGaussianBlur stdDeviation="17"/></filter>
+    <filter id="shadow"><feDropShadow dx="0" dy="13" stdDeviation="17" flood-color="#020414" flood-opacity=".55"/></filter>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#8CA6DB" stroke-opacity=".075"/></pattern>
+  </defs>
+  <rect width="1200" height="420" rx="24" fill="url(#base)"/>
+  <rect width="1200" height="420" rx="24" fill="url(#grid)"/>
+  <ellipse cx="983" cy="152" rx="330" ry="280" fill="url(#glow)"/>
+  <ellipse cx="168" cy="407" rx="360" ry="80" fill="#17B6D9" opacity=".13" filter="url(#blur)"/>
+  <path d="M40 42H240" stroke="url(#electric)" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="57" cy="82" r="6" fill="#40E1E6"/><text x="75" y="87" fill="#8DBBDF" font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="15" letter-spacing="4">COMMERCE PLATFORM</text>
+  <text x="53" y="173" fill="#F6F9FF" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="74" letter-spacing="-2">BANHANG</text>
+  <text x="53" y="245" fill="url(#electric)" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="67" letter-spacing="-2">TECH STORE</text>
+  <text x="57" y="289" fill="#C5D3EB" font-family="Arial, Helvetica, sans-serif" font-size="19">A modern electronics shopping experience</text>
+  <text x="57" y="320" fill="#94A9CD" font-family="Arial, Helvetica, sans-serif" font-size="16">Products  ·  Orders  ·  Payments  ·  Notifications</text>
+  <rect x="55" y="346" width="134" height="34" rx="17" fill="#1E3356" stroke="#3C6285"/>
+  <text x="122" y="368" text-anchor="middle" fill="#8EF4F0" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700">PHP 8.2+</text>
+  <rect x="202" y="346" width="173" height="34" rx="17" fill="#29234F" stroke="#63569E"/>
+  <text x="288" y="368" text-anchor="middle" fill="#D4C9FF" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700">MySQL · MariaDB</text>
+  <g filter="url(#shadow)">
+    <rect x="729" y="56" width="415" height="294" rx="18" fill="#D6E9FF" opacity=".17"/>
+    <rect x="738" y="66" width="397" height="271" rx="14" fill="#111A34" stroke="#516597" stroke-width="1.6"/>
+    <path d="M751 66h371a13 13 0 0 1 13 13v36H738V79a13 13 0 0 1 13-13z" fill="#202B4D"/>
+    <circle cx="758" cy="91" r="5" fill="#FC798D"/><circle cx="774" cy="91" r="5" fill="#EBC773"/><circle cx="790" cy="91" r="5" fill="#53E2BA"/>
+    <rect x="827" y="84" width="134" height="14" rx="7" fill="#354263"/>
+    <text x="844" y="94" fill="#DDE8FF" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="700">BANHANG</text>
+    <rect x="760" y="132" width="354" height="82" rx="13" fill="url(#screen)"/>
+    <text x="781" y="159" fill="#B6D9F8" font-family="Arial, Helvetica, sans-serif" font-size="12" letter-spacing="1.6">EXPLORE WHAT'S NEW</text>
+    <text x="781" y="183" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="700">Your next upgrade starts here</text>
+    <rect x="781" y="193" width="89" height="12" rx="6" fill="#50DBE7"/>
+    <circle cx="1070" cy="173" r="37" fill="#74C8F7" opacity=".15"/>
+    <path d="M1055 147h27a9 9 0 0 1 9 9v38a9 9 0 0 1-9 9h-27a9 9 0 0 1-9-9v-38a9 9 0 0 1 9-9z" fill="#94C5FF" stroke="#C6E1FF" stroke-width="2"/>
+    <rect x="1054" y="155" width="29" height="38" rx="4" fill="#33477D"/>
+    <circle cx="1069" cy="198" r="2" fill="#33477D"/>
+    <g>
+      <rect x="760" y="230" width="108" height="90" rx="9" fill="#222E4D"/>
+      <rect x="881" y="230" width="108" height="90" rx="9" fill="#222E4D"/>
+      <rect x="1002" y="230" width="110" height="90" rx="9" fill="#222E4D"/>
+      <rect x="790" y="240" width="45" height="49" rx="9" fill="#648CE5"/><rect x="798" y="245" width="29" height="38" rx="4" fill="#182E5B"/><circle cx="813" cy="286" r="2" fill="#D3DEFA"/>
+      <path d="M906 274l11-24h36l11 24z" fill="#9D83F6"/><rect x="903" y="274" width="64" height="6" rx="3" fill="#C1B2FF"/>
+      <path d="M1030 247h52v34h-52z" fill="#61C6DE" stroke="#C0E8FF" stroke-width="2"/><path d="M1024 285h65" stroke="#A6D9F3" stroke-width="5" stroke-linecap="round"/>
+      <path d="M774 299h41M895 299h42M1017 299h42" stroke="#B3C7E4" stroke-width="5" stroke-linecap="round" opacity=".8"/>
+      <path d="M774 310h67M895 310h68M1017 310h68" stroke="#6E88B3" stroke-width="4" stroke-linecap="round" opacity=".55"/>
+    </g>
+  </g>
+  <g filter="url(#shadow)" transform="translate(656 172)">
+    <rect width="116" height="219" rx="22" fill="#182342" stroke="#91BAFF" stroke-width="3"/>
+    <rect x="8" y="17" width="100" height="190" rx="14" fill="url(#screen)"/>
+    <rect x="43" y="7" width="32" height="5" rx="2.5" fill="#7B8DB0"/>
+    <circle cx="58" cy="63" r="28" fill="#A67CFA" opacity=".38"/>
+    <path d="M42 39h32a8 8 0 0 1 8 8v51a8 8 0 0 1-8 8H42a8 8 0 0 1-8-8V47a8 8 0 0 1 8-8z" fill="#A2CDF8" stroke="#DAEFFF" stroke-width="2"/>
+    <rect x="40" y="45" width="36" height="49" rx="4" fill="#344A90"/>
+    <rect x="24" y="119" width="68" height="7" rx="3.5" fill="#F2FAFF"/>
+    <rect x="35" y="134" width="46" height="5" rx="2.5" fill="#9EB7D7"/>
+    <rect x="22" y="160" width="72" height="27" rx="13.5" fill="url(#electric)"/>
+    <text x="58" y="177" text-anchor="middle" fill="#142546" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="800">SHOP NOW</text>
+  </g>
+  <circle cx="1113" cy="43" r="7" fill="#47DDF2" opacity=".8"/>
+  <circle cx="1163" cy="370" r="12" fill="#907EFF" opacity=".6"/>
+  <path d="M1170 31v45M1148 53h45" stroke="#47DDF2" stroke-width="2" opacity=".6"/>
+</svg>
