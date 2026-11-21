@@ -4,6 +4,6 @@ Options -Indexes
  Header always set Referrer-Policy "strict-origin-when-cross-origin"
  Header always set X-Frame-Options "DENY"
 </IfModule>
-<FilesMatch "^(app\.php|database_upgrade\.sql|config\.local\.php)$">
+<FilesMatch "^(app\.php|database_upgrade\.sql|performance_indexes\.sql|config\.local\.php)$">
  Require all denied
 </FilesMatch>

@@ -9,3 +9,8 @@ Desktop.ini
 # File cấu hình nhạy cảm hoặc tạm thời nếu có
 *.bak
 *.tmp
+
+# Local credentials, environment and runtime logs
+.env
+*.log
+admin/config/config.local.php

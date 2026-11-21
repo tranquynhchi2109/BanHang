@@ -2,8 +2,8 @@
 declare(strict_types=1);
 
 /**
- * BanHang v2 shared infrastructure.
- * Public front controllers: index.php and admin.php.
+ * BanHang shared infrastructure.
+ * Public front controllers: index.php and admin/index.php.
  * No framework, no composer dependency; PHP 8.2+ and pdo_mysql.
  */
 ini_set('display_errors', '0');
@@ -11,9 +11,11 @@ ini_set('log_errors', '1');
 ini_set('session.use_strict_mode', '1');
 ini_set('session.use_only_cookies', '1');
 $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
-session_name('BANHANG_V2');
-$cookiePath = str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/v2/index.php')));
-if ($cookiePath === '.' || $cookiePath === '') $cookiePath = '/';
+session_name('PHPSESSID');
+$scriptDirectory = str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/index.php')));
+if (preg_match('~/admin$~', $scriptDirectory)) $scriptDirectory = substr($scriptDirectory, 0, -6);
+$cookiePath = rtrim($scriptDirectory, '/');
+if ($cookiePath === '') $cookiePath = '/';
 session_set_cookie_params([
     'lifetime' => 0, 'path' => $cookiePath, 'secure' => $https,
     'httponly' => true, 'samesite' => 'Lax',
@@ -28,11 +30,25 @@ header("Permissions-Policy: camera=(), microphone=(), geolocation=()");
 header("Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; img-src 'self' https://img.vietqr.io data:; font-src 'self' https://fonts.gstatic.com; form-action 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'");
 header('Cache-Control: no-store');
 
+function base_path(): string
+{
+    static $base = null;
+    if ($base !== null) return $base;
+    $directory = str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/index.php')));
+    if (preg_match('~/admin$~', $directory)) $directory = substr($directory, 0, -6);
+    $base = rtrim($directory, '/');
+    return $base;
+}
+function project_url(string $path): string
+{
+    return base_path() . '/' . ltrim($path, '/');
+}
+
 function db(): PDO
 {
     static $db = null;
     if ($db instanceof PDO) return $db;
-    $config = is_file(__DIR__ . '/config.local.php') ? require __DIR__ . '/config.local.php' : [];
+    $config = is_file(__DIR__ . '/admin/config/config.local.php') ? require __DIR__ . '/admin/config/config.local.php' : [];
     $get = static fn(string $key, string $default): string =>
         (string) (getenv($key) !== false ? getenv($key) : ($config[$key] ?? $default));
     $host = $get('DB_HOST', '127.0.0.1');
@@ -78,11 +94,11 @@ function money(int|float|string $amount): string
 }
 function link_to(string $page, array $args = []): string
 {
-    return 'index.php?' . http_build_query(['page' => $page] + $args, '', '&', PHP_QUERY_RFC3986);
+    return project_url('index.php') . '?' . http_build_query(['page' => $page] + $args, '', '&', PHP_QUERY_RFC3986);
 }
 function admin_to(string $page, array $args = []): string
 {
-    return 'admin.php?' . http_build_query(['page' => $page] + $args, '', '&', PHP_QUERY_RFC3986);
+    return project_url('admin/index.php') . '?' . http_build_query(['page' => $page] + $args, '', '&', PHP_QUERY_RFC3986);
 }
 function redirect_to(string $url): never
 {
@@ -141,6 +157,68 @@ function current_admin(): ?array
     $id = filter_var($_SESSION['admin_id'] ?? null, FILTER_VALIDATE_INT);
     if (!$id || $id < 1) return null;
     return row('SELECT id_admin,username,admin_status FROM tbl_admin WHERE id_admin=? AND admin_status=1', [$id]);
+}
+function cart_key(int $productId, string $variant = 'BASE'): string
+{
+    $variant = strtoupper(trim($variant));
+    if (!in_array($variant, ['BASE','128GB','256GB','512GB','1TB'], true)) $variant = 'BASE';
+    return $productId . ':' . $variant;
+}
+function parse_cart_key(string|int $key): array
+{
+    $parts = explode(':', (string)$key, 2);
+    $productId = (int)($parts[0] ?? 0);
+    $variant = strtoupper(trim($parts[1] ?? 'BASE'));
+    if (!in_array($variant, ['BASE','128GB','256GB','512GB','1TB'], true)) $variant = 'BASE';
+    return [$productId, $variant];
+}
+function variant_price(array $product, string $variant = 'BASE'): int
+{
+    $base = (int)($product['giasp'] ?? 0);
+    if (($product['tendanhmuc'] ?? '') !== 'Điện thoại') return $base;
+    if ($variant === 'BASE') $variant = '128GB';
+    $extras = ['128GB'=>0, '256GB'=>2000000, '512GB'=>5000000, '1TB'=>10000000];
+    if (!array_key_exists($variant, $extras)) throw new DomainException('Vui lòng chọn dung lượng hợp lệ.');
+    return $base + $extras[$variant];
+}
+function cart_product_quantity(array $cart, int $productId, string $excludeKey = ''): int
+{
+    $total = 0;
+    foreach ($cart as $key => $quantity) {
+        if ((string)$key === $excludeKey) continue;
+        [$id] = parse_cart_key((string)$key);
+        if ($id === $productId) $total += max(0, (int)$quantity);
+    }
+    return $total;
+}
+function migrate_legacy_session(): void
+{
+    if (!isset($_SESSION['customer_id']) && isset($_SESSION['id_khachhang'])) {
+        $_SESSION['customer_id'] = (int)$_SESSION['id_khachhang'];
+    }
+    if (!isset($_SESSION['admin_id']) && isset($_SESSION['dangnhap']) && is_string($_SESSION['dangnhap'])) {
+        $legacyAdmin = row('SELECT id_admin FROM tbl_admin WHERE username=? AND admin_status=1 LIMIT 1', [$_SESSION['dangnhap']]);
+        if ($legacyAdmin) $_SESSION['admin_id'] = (int)$legacyAdmin['id_admin'];
+    }
+    $cart = $_SESSION['cart'] ?? [];
+    if (!is_array($cart) || !$cart) return;
+    $normalized = [];
+    foreach ($cart as $key => $item) {
+        if (is_array($item)) {
+            $id = (int)($item['id'] ?? 0);
+            $quantity = (int)($item['soluong'] ?? 0);
+            $variant = strtoupper(trim((string)($item['dungluong'] ?? 'BASE')));
+            if ($variant === '') $variant = 'BASE';
+        } else {
+            [$id, $variant] = parse_cart_key((string)$key);
+            $quantity = (int)$item;
+        }
+        if ($id > 0 && $quantity > 0) {
+            $normalizedKey = cart_key($id, $variant);
+            $normalized[$normalizedKey] = min(20, ($normalized[$normalizedKey] ?? 0) + $quantity);
+        }
+    }
+    $_SESSION['cart'] = $normalized;
 }
 function require_admin(): array
 {
@@ -220,13 +298,13 @@ function login_admin(string $username, string $password): bool
 function safe_image(string $filename, string $kind = 'product'): string
 {
     $basename = basename(str_replace('\\', '/', $filename));
-    if ($basename === '' || !preg_match('/\.(?:png|jpe?g|webp)$/i', $basename)) {
-        return 'assets/fallback.svg';
+    if ($basename === '' || !preg_match('/\\.(?:png|jpe?g|webp)$/i', $basename)) {
+        return project_url('images/fallback.svg');
     }
     $folder = $kind === 'news' ? 'quanlybaiviet' : 'quanlysp';
-    $local = dirname(__DIR__) . '/admin/modules/' . $folder . '/uploads/' . $basename;
-    if (!is_file($local)) return 'assets/fallback.svg';
-    return '../admin/modules/' . $folder . '/uploads/' . rawurlencode($basename);
+    $local = __DIR__ . '/admin/modules/' . $folder . '/uploads/' . $basename;
+    if (!is_file($local)) return project_url('images/fallback.svg');
+    return project_url('admin/modules/' . $folder . '/uploads/' . rawurlencode($basename));
 }
 function setting(string $key, string $default = ''): string
 {
@@ -254,7 +332,7 @@ function page_head(string $title, bool $admin = false): void
     $full = h($title . ' | ' . setting('store_name', 'BanHang Tech Store'));
     echo '<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
     echo '<title>' . $full . '</title><meta name="description" content="BanHang — công nghệ cho cuộc sống hiện đại.">';
-    echo '<link rel="stylesheet" href="assets/site.css"><script src="assets/app.js" defer></script></head><body>';
+    echo '<link rel="stylesheet" href="' . h(project_url('css/style.css')) . '"><script src="' . h(project_url('js/app.js')) . '" defer></script></head><body>';
     if ($admin) return;
     $user = current_user();
     $count = array_sum(array_map('intval', $_SESSION['cart'] ?? []));
@@ -267,22 +345,24 @@ function page_head(string $title, bool $admin = false): void
     echo '<nav class="nav container" id="mobile-nav"><a href="' . link_to('products') . '">Tất cả sản phẩm</a><a href="' . link_to('products', ['category' => 'phone']) . '">Điện thoại</a>';
     echo '<a href="' . link_to('products', ['category' => 'laptop']) . '">Laptop</a><a href="' . link_to('products', ['category' => 'audio']) . '">Âm thanh</a>';
     echo '<a href="' . link_to('products', ['category' => 'watch']) . '">Đồng hồ</a><a href="' . link_to('products', ['category' => 'accessories']) . '">Phụ kiện</a>';
-    echo '<a href="' . link_to('news') . '">Tin công nghệ</a><a href="' . link_to('orders') . '">Đơn hàng</a><a href="admin.php">Admin</a></nav></header>';
+    echo '<a href="' . link_to('news') . '">Tin công nghệ</a><a href="' . link_to('orders') . '">Đơn hàng</a><a href="' . admin_to('dashboard') . '">Quản trị</a></nav></header>';
 }
 function page_foot(bool $admin = false): void
 {
     if (!$admin) {
-        echo '<footer class="footer"><div class="container footer__grid"><section><h2>BANHANG.</h2><p>Công nghệ dành cho cuộc sống hiện đại.</p></section><section><h3>Mua sắm</h3><a href="' . link_to('products') . '">Sản phẩm</a><a href="' . link_to('cart') . '">Giỏ hàng</a></section><section><h3>Hỗ trợ</h3><a href="' . link_to('orders') . '">Đơn hàng</a><a href="' . link_to('news') . '">Tin tức</a></section><section><h3>Thông tin</h3><p>Giao diện BanHang Premium v2</p></section></div></footer>';
+        echo '<footer class="footer"><div class="container footer__grid"><section><h2>BANHANG.</h2><p>Công nghệ dành cho cuộc sống hiện đại.</p></section><section><h3>Mua sắm</h3><a href="' . link_to('products') . '">Sản phẩm</a><a href="' . link_to('cart') . '">Giỏ hàng</a></section><section><h3>Hỗ trợ</h3><a href="' . link_to('orders') . '">Đơn hàng</a><a href="' . link_to('news') . '">Tin tức</a></section><section><h3>Thông tin</h3><p>Trải nghiệm công nghệ hiện đại.</p></section></div></footer>';
     }
     echo '</body></html>';
 }
 function product_card(array $product): void
 {
     $id = (int)$product['id_sanpham'];
+    $variant = (($product['tendanhmuc'] ?? '') === 'Điện thoại') ? '128GB' : 'BASE';
+    $price = variant_price($product, $variant);
     echo '<article class="product-card"><a class="product-card__image" href="' . link_to('product', ['id' => $id]) . '"><img loading="lazy" src="' . h(safe_image($product['hinhanh'])) . '" alt="' . h($product['tensanpham']) . '"></a>';
     echo '<p class="product-card__cat">' . h($product['tendanhmuc'] ?? 'Công nghệ') . '</p><h3><a href="' . link_to('product', ['id' => $id]) . '">' . h($product['tensanpham']) . '</a></h3>';
-    echo '<p class="rating">★ 4.9 <span>· Sản phẩm chính hãng</span></p><div class="product-card__bottom"><strong>' . money((int)$product['giasp']) . '</strong>';
-    echo '<form action="index.php" method="post">' . csrf_field() . '<input type="hidden" name="action" value="add_cart"><input type="hidden" name="product_id" value="' . $id . '"><input type="hidden" name="qty" value="1">';
+    echo '<p class="rating">★ 4.9 <span>· Sản phẩm chính hãng</span></p><div class="product-card__bottom"><strong>' . money($price) . '</strong>';
+    echo '<form action="' . h(project_url('index.php')) . '" method="post">' . csrf_field() . '<input type="hidden" name="action" value="add_cart"><input type="hidden" name="product_id" value="' . $id . '"><input type="hidden" name="variant" value="' . h($variant) . '"><input type="hidden" name="qty" value="1">';
     echo '<button type="submit" class="icon-button" aria-label="Thêm vào giỏ">＋</button></form></div></article>';
 }
 function form_error(?string $error): void
