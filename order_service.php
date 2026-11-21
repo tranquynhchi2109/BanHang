@@ -433,6 +433,10 @@ function update_order_status(int $orderId, int $adminId, string $next, array $op
         if (!$order) throw new DomainException('Không tìm thấy đơn hàng.');
 
         $from = (string)$order['order_status'];
+        $pendingCancel = row("SELECT id,reason FROM tbl_order_cancel_requests WHERE order_id=? AND status='PENDING' FOR UPDATE",[$orderId]);
+        if ($pendingCancel && $next!=='CANCELLED') {
+            throw new DomainException('Khách đang yêu cầu hủy đơn. Admin cần duyệt hoặc từ chối yêu cầu trước khi tiếp tục xử lý.');
+        }
         $transitions = order_status_transitions();
         if (!in_array($next, $transitions[$from] ?? [], true)) {
             throw new DomainException('Chuyển trạng thái đơn hàng không được phép theo quy trình hiện tại.');
@@ -561,6 +565,10 @@ function update_order_status(int $orderId, int $adminId, string $next, array $op
             "order_status:{$orderId}:{$next}"
         );
 
+        if ($next==='CANCELLED' && $pendingCancel) {
+            run("UPDATE tbl_order_cancel_requests SET status='APPROVED',admin_note=?,resolved_at=NOW(),resolved_by=? WHERE id=?",
+                ['Đã duyệt hủy đơn, hoàn lại tồn kho.',$adminId,$pendingCancel['id']]);
+        }
         $updatedOrder = row('SELECT * FROM tbl_orders WHERE id=?', [$orderId]);
         queue_order_email($updatedOrder, $mailEvent, $publicNote, "email_status:{$orderId}:{$next}");
 
