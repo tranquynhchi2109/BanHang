@@ -109,21 +109,24 @@ jobs:
           test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_orders WHERE order_code LIKE 'BHDEMO%'")" = '240'
           test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_order_items i JOIN tbl_orders o ON o.id=i.order_id WHERE o.order_code LIKE 'BHDEMO%'")" = '480'
           test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_dangky WHERE email LIKE 'banhang-demo-%@example.invalid'")" = '20'
-          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_sanpham WHERE masp LIKE 'BH-DEMO-P%'")" = '16'
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_sanpham WHERE masp LIKE 'BH-TECH-P%'")" = '50'
           test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_danhmuc WHERE tendanhmuc LIKE '[DEMO]%'")" = '0'
-          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_sanpham WHERE masp LIKE 'BH-DEMO-P%' AND tinhtrang<>0")" = '0'
-          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_sanpham p JOIN tbl_danhmuc d ON d.id_danhmuc=p.id_danhmuc WHERE p.masp LIKE 'BH-DEMO-P%' AND d.tendanhmuc IN ('Điện thoại','Laptop','Tai nghe & Loa','Phụ kiện điện tử')")" = '16'
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_sanpham WHERE masp LIKE 'BH-TECH-P%' AND tinhtrang=1")" = '50'
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_sanpham p JOIN tbl_danhmuc d ON d.id_danhmuc=p.id_danhmuc WHERE p.masp LIKE 'BH-TECH-P%' AND d.tendanhmuc IN ('Điện thoại','Laptop','Tai nghe & Loa','Phụ kiện điện tử','Đồng hồ')")" = '50'
           test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_sanpham WHERE masp='CI1' AND tinhtrang=1")" = '1'
           test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_order_cancel_requests c JOIN tbl_orders o ON o.id=c.order_id WHERE o.order_code LIKE 'BHDEMO%' AND c.status='PENDING'")" = '20'
           test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_orders WHERE order_code LIKE 'BHDEMO%' AND payment_status='PAID'")" = '80'
           test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_orders WHERE order_code LIKE 'BHDEMO%' AND order_status='CANCELLED'")" = '40'
-          stock_before="$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT SUM(soluong) FROM tbl_sanpham WHERE masp LIKE 'BH-DEMO-P%'")"
+          stock_before="$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT SUM(soluong) FROM tbl_sanpham WHERE masp LIKE 'BH-TECH-P%'")"
           movement_before="$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_inventory_movements m JOIN tbl_orders o ON o.id=m.order_id WHERE o.order_code LIKE 'BHDEMO%'")"
           mysql -h127.0.0.1 -uroot web_mysqli_test < database/seed_demo_orders.sql
-          test "$stock_before" = "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT SUM(soluong) FROM tbl_sanpham WHERE masp LIKE 'BH-DEMO-P%'")"
+          test "$stock_before" = "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT SUM(soluong) FROM tbl_sanpham WHERE masp LIKE 'BH-TECH-P%'")"
           test "$movement_before" = "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_inventory_movements m JOIN tbl_orders o ON o.id=m.order_id WHERE o.order_code LIKE 'BHDEMO%'")"
           test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_orders WHERE order_code LIKE 'BHDEMO%'")" = '240'
-          echo "Demo seed is consistent and idempotent"
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_sanpham WHERE masp LIKE 'BH-DEMO-P%'")" = '0'
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_order_items i JOIN tbl_orders o ON o.id=i.order_id WHERE o.order_code LIKE 'BHDEMO%' AND i.product_name LIKE '[DEMO]%'")" = '0'
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_sanpham WHERE masp LIKE 'BH-TECH-P%' AND (hinhanh='' OR giasp<=0 OR soluong<0)")" = '0'
+          echo "Course catalog: 50 active products, 240 orders, 480 items, idempotent"
 
       - name: Verify demo seed on legacy general_ci database
         run: |
