@@ -67,7 +67,7 @@ elseif ($page==='products' || $page==='recommendations') {
 }
 elseif ($page==='product') {
     $id=as_int($_GET['id']??0);
-    $product=row('SELECT p.*,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON p.id_danhmuc=c.id_danhmuc WHERE p.id_sanpham=? AND p.tinhtrang=1,[$id]);
+    $product=row('SELECT p.*,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON p.id_danhmuc=c.id_danhmuc WHERE p.id_sanpham=? AND p.tinhtrang=1',[$id]);
     if (!$product) {http_response_code(404);page_title('Không tìm thấy sản phẩm');}
     else {
         $isPhone=is_phone_product($product);
