@@ -7,7 +7,7 @@ echo '<div class="container flash">'.(notices_html()??'').'</div>';
 
 if ($page==='home') {
     $featured=rows('SELECT p.id_sanpham,p.tensanpham,p.giasp,p.hinhanh,p.soluong,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.tinhtrang=1 ORDER BY p.id_sanpham DESC LIMIT 8');
-    $categories=rows('SELECT id_danhmuc,tendanhmuc FROM tbl_danhmuc ORDER BY thutu ASC,id_danhmuc ASC LIMIT 8');
+    $categories=rows("SELECT id_danhmuc,tendanhmuc FROM tbl_danhmuc WHERE tendanhmuc NOT LIKE '[DEMO]%' ORDER BY thutu ASC,id_danhmuc ASC LIMIT 8");
     echo '<div class="container">';
     echo '<section class="hero-grid"><div class="hero-primary"><div class="hero-copy"><span class="hero-label">NEW DROP · TECH EDITION</span><h1>Thiết bị mới.<br>Cảm hứng mới.</h1><p>Nâng tầm từng khoảnh khắc với những thiết bị công nghệ được chọn lọc.</p><a class="button button--mint" href="'.link_to('products').'">Khám phá sản phẩm ↗</a></div>';
     echo '<div class="hero-visual"><div class="hero-device">B</div><div class="hero-glow"></div></div></div>';
@@ -51,7 +51,7 @@ elseif ($page==='products' || $page==='recommendations') {
     $products=rows('SELECT p.id_sanpham,p.tensanpham,p.giasp,p.hinhanh,p.soluong,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE '.$clause.' ORDER BY '.$sortSql.' LIMIT '.$limit.' OFFSET '.$offset,$params);
     page_title($page==='recommendations'?'Gợi ý cho bạn':'Khám phá sản phẩm','Chọn theo thương hiệu, giá cả và nhu cầu của bạn.');
     echo '<div class="container section"><div class="catalog-layout"><aside class="sidebar-filter"><h3>Danh mục sản phẩm</h3><a href="'.link_to('products').'">Tất cả sản phẩm</a>';
-    foreach (rows('SELECT id_danhmuc,tendanhmuc FROM tbl_danhmuc ORDER BY thutu,id_danhmuc') as $cat) {
+    foreach (rows("SELECT id_danhmuc,tendanhmuc FROM tbl_danhmuc WHERE tendanhmuc NOT LIKE '[DEMO]%' ORDER BY thutu,id_danhmuc") as $cat) {
         echo '<a href="'.link_to('products',['category_id'=>(int)$cat['id_danhmuc']]).'">'.h($cat['tendanhmuc']).'</a>';
     }
     echo '<hr><p>Giá và tồn kho được lấy trực tiếp từ cơ sở dữ liệu.</p></aside><section class="catalog-main"><div class="catalog-toolbar"><span><strong>'.(int)($totalRow['n']??0).'</strong> sản phẩm</span><form method="get"><input type="hidden" name="page" value="products"><input type="hidden" name="q" value="'.h($q).'">';
