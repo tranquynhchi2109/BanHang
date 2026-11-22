@@ -6,7 +6,7 @@ echo '<main>';
 echo '<div class="container flash">'.(notices_html()??'').'</div>';
 
 if ($page==='home') {
-    $featured=rows('SELECT p.id_sanpham,p.tensanpham,p.giasp,p.hinhanh,p.soluong,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.tinhtrang=1 AND p.masp NOT LIKE 'BH-DEMO-P%' ORDER BY p.id_sanpham DESC LIMIT 8');
+    $featured=rows('SELECT p.id_sanpham,p.tensanpham,p.giasp,p.hinhanh,p.soluong,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.tinhtrang=1 AND p.masp NOT LIKE \'BH-DEMO-P%\' ORDER BY p.id_sanpham DESC LIMIT 8');
     $categories=rows("SELECT id_danhmuc,tendanhmuc FROM tbl_danhmuc WHERE tendanhmuc NOT LIKE '[DEMO]%' ORDER BY thutu ASC,id_danhmuc ASC LIMIT 8");
     echo '<div class="container">';
     echo '<section class="hero-grid"><div class="hero-primary"><div class="hero-copy"><span class="hero-label">NEW DROP · TECH EDITION</span><h1>Thiết bị mới.<br>Cảm hứng mới.</h1><p>Nâng tầm từng khoảnh khắc với những thiết bị công nghệ được chọn lọc.</p><a class="button button--mint" href="'.link_to('products').'">Khám phá sản phẩm ↗</a></div>';
@@ -67,7 +67,7 @@ elseif ($page==='products' || $page==='recommendations') {
 }
 elseif ($page==='product') {
     $id=as_int($_GET['id']??0);
-    $product=row('SELECT p.*,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON p.id_danhmuc=c.id_danhmuc WHERE p.id_sanpham=? AND p.tinhtrang=1 AND p.masp NOT LIKE 'BH-DEMO-P%'',[$id]);
+    $product=row('SELECT p.*,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON p.id_danhmuc=c.id_danhmuc WHERE p.id_sanpham=? AND p.tinhtrang=1 AND p.masp NOT LIKE \'BH-DEMO-P%\'',[$id]);
     if (!$product) {http_response_code(404);page_title('Không tìm thấy sản phẩm');}
     else {
         $isPhone=is_phone_product($product);
@@ -99,7 +99,7 @@ elseif ($page==='product') {
         }
         echo '<div class="product-services">✓ Thanh toán bảo mật &nbsp; ✓ Có theo dõi đơn &nbsp; ✓ Tư vấn hỗ trợ</div></div></div>';
         echo '<section class="section"><h2>Mô tả sản phẩm</h2><div class="surface prose">'.nl2br(h(strip_tags((string)$product['noidung']))).'</div></section>';
-        $recommended=rows('SELECT p.id_sanpham,p.tensanpham,p.giasp,p.hinhanh,p.soluong,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.id_danhmuc=? AND p.id_sanpham<>? AND p.tinhtrang=1 AND p.masp NOT LIKE 'BH-DEMO-P%' ORDER BY p.id_sanpham DESC LIMIT 4',[$product['id_danhmuc'],$id]);
+        $recommended=rows('SELECT p.id_sanpham,p.tensanpham,p.giasp,p.hinhanh,p.soluong,c.tendanhmuc FROM tbl_sanpham p JOIN tbl_danhmuc c ON c.id_danhmuc=p.id_danhmuc WHERE p.id_danhmuc=? AND p.id_sanpham<>? AND p.tinhtrang=1 AND p.masp NOT LIKE \'BH-DEMO-P%\' ORDER BY p.id_sanpham DESC LIMIT 4',[$product['id_danhmuc'],$id]);
         section_header('Sản phẩm liên quan','Bạn có thể quan tâm');product_grid($recommended);
         echo '</div>';
     }
