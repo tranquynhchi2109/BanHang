@@ -48,3 +48,10 @@ Never import into production. Do not edit the database name inside the SQL; sele
 - Fake customers cannot log in. There are no public demo account credentials.
 - Cancelling a demo order from Admin uses the normal product inventory workflow. Demo orders must never be treated as real customer commitments.
 - For a clean demo, rebuild **only** the disposable web_mysqli_demo database from scratch, NEVER web_mysqli.
+
+
+## Lỗi #1267 khi import vào database XAMPP cũ
+
+Nếu gặp **Illegal mix of collations (utf8mb4_unicode_ci và utf8mb4_general_ci)**, hãy lấy **bản seed_demo_orders.sql mới nhất** và import lại. Bản cập nhật dùng COLLATE tường minh khi so sánh tên danh mục, mã sản phẩm, email khách và mã đơn trong dữ liệu giả lập.
+
+**Không** dùng ALTER TABLE hoặc CONVERT TO CHARACTER SET để chuyển đổi hàng loạt dữ liệu khách hàng. **Không** xóa database. Sau khi đã sao lưu, giữ nguyên opt-in nếu đang cố ý dùng database local và import lại file mới. File seed đã có bảo vệ chống sinh đơn trùng.
