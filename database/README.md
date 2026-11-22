@@ -55,3 +55,18 @@ Never import into production. Do not edit the database name inside the SQL; sele
 Nếu gặp **Illegal mix of collations (utf8mb4_unicode_ci và utf8mb4_general_ci)**, hãy lấy **bản seed_demo_orders.sql mới nhất** và import lại. Bản cập nhật dùng COLLATE tường minh khi so sánh tên danh mục, mã sản phẩm, email khách và mã đơn trong dữ liệu giả lập.
 
 **Không** dùng ALTER TABLE hoặc CONVERT TO CHARACTER SET để chuyển đổi hàng loạt dữ liệu khách hàng. **Không** xóa database. Sau khi đã sao lưu, giữ nguyên opt-in nếu đang cố ý dùng database local và import lại file mới. File seed đã có bảo vệ chống sinh đơn trùng.
+
+
+## Danh mục chung, không tách [DEMO]
+
+Từ bản seed mới nhất, 16 sản phẩm **fixture nội bộ** được gắn vào **chính** các danh mục ban đầu: **Điện thoại, Laptop, Tai nghe & Loa, Phụ kiện điện tử**. Không còn tạo danh mục [DEMO] mới. Fixture sản phẩm được **tắt bán** (tinhtrang=0) để không nhân đôi iPhone, Galaxy hay laptop trên gian hàng, nhưng vẫn giữ ID và tồn kho cho 240 đơn hàng thử nghiệm/hủy đơn an toàn.
+
+**Nếu đã import bản cũ và trang chủ hiện danh mục [DEMO]:**
+
+1. Backup database web_mysqli.
+2. git pull origin main để có bản seed mới.
+3. Nếu chủ động import vào database local web_mysqli, giữ opt-in @bh_demo_allow_existing_database=1; nếu dùng web_mysqli_demo, giữ mặc định 0.
+4. Import lại **database/seed_demo_orders.sql**. Script tự chuyển **chỉ** các sản phẩm có SKU BH-DEMO-P% về danh mục chung, ẩn chúng khỏi storefront và xóa các danh mục cũ **nếu trống**. Đơn đã tồn tại không bị thêm lại, không bị trừ kho lần hai.
+5. Tải lại trang chủ và kiểm tra danh mục.
+
+Không xóa tay tbl_sanpham hoặc tbl_orders. Các sản phẩm fixture còn nằm trong Admin ở trạng thái ẩn nhằm giữ tham chiếu đơn hàng lịch sử; đơn BHDEMO và dữ liệu thanh toán giả lập vẫn được giữ để kiểm thử, **không phải doanh thu thật**.
