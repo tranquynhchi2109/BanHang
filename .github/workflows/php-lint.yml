@@ -114,3 +114,16 @@ jobs:
           test "$movement_before" = "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_inventory_movements m JOIN tbl_orders o ON o.id=m.order_id WHERE o.order_code LIKE 'BHDEMO%'")"
           test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_orders WHERE order_code LIKE 'BHDEMO%'")" = '240'
           echo "Demo seed is consistent and idempotent"
+
+      - name: Verify demo seed on legacy general_ci database
+        run: |
+          mysql -h127.0.0.1 -uroot -e "CREATE DATABASE web_mysqli_collation_test CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
+          mysql -h127.0.0.1 -uroot web_mysqli_collation_test < banhang.sql
+          mysql -h127.0.0.1 -uroot web_mysqli_collation_test -e "ALTER TABLE tbl_danhmuc CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
+          mysql -h127.0.0.1 -uroot web_mysqli_collation_test -e "ALTER TABLE tbl_dangky CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
+          mysql -h127.0.0.1 -uroot web_mysqli_collation_test < database/seed_demo_orders.sql
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_collation_test -e "SELECT COUNT(*) FROM tbl_orders WHERE order_code LIKE 'BHDEMO%'")" = '240'
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_collation_test -e "SELECT COUNT(*) FROM tbl_order_items i JOIN tbl_orders o ON o.id=i.order_id WHERE o.order_code LIKE 'BHDEMO%'")" = '480'
+          mysql -h127.0.0.1 -uroot web_mysqli_collation_test < database/seed_demo_orders.sql
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_collation_test -e "SELECT COUNT(*) FROM tbl_orders WHERE order_code LIKE 'BHDEMO%'")" = '240'
+          echo "Legacy general_ci + new unicode_ci joined successfully without changing real schema"
