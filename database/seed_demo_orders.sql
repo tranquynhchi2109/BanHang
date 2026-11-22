@@ -2,7 +2,10 @@
 -- Generates 16 demo products, 20 fake customers and 240 demo orders.
 -- Orders marked PAID are SIMULATED, not bank payments or real revenue.
 -- NEVER use in production. See database/README.md before import.
-SET NAMES utf8mb4;
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+-- Legacy XAMPP tables may have utf8mb4_general_ci even when new tables
+-- use utf8mb4_unicode_ci. Always normalize both sides of textual joins
+-- explicitly; changing a whole customer database's collation is unsafe.
 SET @bh_demo_allow_existing_database = 0; -- change to 1 ONLY for a deliberate local demo import
 SET @bh_demo_allowed = DATABASE() IS NOT NULL AND
   (DATABASE() REGEXP '(_demo|_test|_testing|_ci)$' OR @bh_demo_allow_existing_database=1);
@@ -76,18 +79,18 @@ START TRANSACTION;
 
 INSERT INTO tbl_danhmuc(tendanhmuc,thutu)
 SELECT c.category,1000 FROM (SELECT DISTINCT category FROM bh_demo_catalog) c
-WHERE NOT EXISTS(SELECT 1 FROM tbl_danhmuc d WHERE d.tendanhmuc=c.category);
+WHERE NOT EXISTS(SELECT 1 FROM tbl_danhmuc d WHERE d.tendanhmuc COLLATE utf8mb4_unicode_ci = c.category COLLATE utf8mb4_unicode_ci);
 
 INSERT INTO tbl_sanpham(tensanpham,masp,giasp,soluong,hinhanh,tomtat,noidung,tinhtrang,id_danhmuc)
 SELECT c.title,c.sku,c.demo_price,1000,c.image_file,
  '[DEMO] Giá minh họa, không phải giá bán thực tế.',
  '[DEMO] Chỉ để thử sản phẩm, đơn hàng, quản trị và biểu đồ.',1,d.id_danhmuc
-FROM bh_demo_catalog c JOIN tbl_danhmuc d ON d.tendanhmuc=c.category
-WHERE NOT EXISTS(SELECT 1 FROM tbl_sanpham p WHERE p.masp=c.sku);
+FROM bh_demo_catalog c JOIN tbl_danhmuc d ON d.tendanhmuc COLLATE utf8mb4_unicode_ci = c.category COLLATE utf8mb4_unicode_ci
+WHERE NOT EXISTS(SELECT 1 FROM tbl_sanpham p WHERE p.masp COLLATE utf8mb4_unicode_ci = c.sku COLLATE utf8mb4_unicode_ci);
 
 INSERT INTO bh_demo_products(n,product_id,product_name,base_price,is_phone)
 SELECT c.n,p.id_sanpham,p.tensanpham,p.giasp,IF(c.category='[DEMO] Điện thoại',1,0)
-FROM bh_demo_catalog c JOIN tbl_sanpham p ON p.masp=c.sku;
+FROM bh_demo_catalog c JOIN tbl_sanpham p ON p.masp COLLATE utf8mb4_unicode_ci = c.sku COLLATE utf8mb4_unicode_ci;
 
 INSERT INTO tbl_product_variants(product_id,variant_code,price,is_active)
 SELECT p.product_id,v.variant,p.base_price+v.extra,1
@@ -97,7 +100,7 @@ FROM bh_demo_products p CROSS JOIN (
 ) v
 WHERE p.is_phone=1 AND NOT EXISTS(
  SELECT 1 FROM tbl_product_variants pv
- WHERE pv.product_id=p.product_id AND pv.variant_code=v.variant
+ WHERE pv.product_id=p.product_id AND pv.variant_code COLLATE utf8mb4_unicode_ci = v.variant COLLATE utf8mb4_unicode_ci
 );
 
 -- Fake email addresses do not receive messages; invalid hashes prevent login.
@@ -108,12 +111,12 @@ SELECT CONCAT('[DEMO] Khách ',LPAD(s.n,2,'0')),
 FROM bh_demo_nums s WHERE s.n<=20
 AND NOT EXISTS (
  SELECT 1 FROM tbl_dangky u
- WHERE u.email=CONCAT('banhang-demo-',LPAD(s.n,2,'0'),'@example.invalid')
+ WHERE u.email COLLATE utf8mb4_unicode_ci = CONCAT('banhang-demo-',LPAD(s.n,2,'0'),'@example.invalid') COLLATE utf8mb4_unicode_ci
 );
 INSERT INTO bh_demo_customers(n,user_id,display_name)
 SELECT s.n,u.id_dangky,u.tenkhachhang
 FROM bh_demo_nums s JOIN tbl_dangky u
- ON u.email=CONCAT('banhang-demo-',LPAD(s.n,2,'0'),'@example.invalid')
+ ON u.email COLLATE utf8mb4_unicode_ci = CONCAT('banhang-demo-',LPAD(s.n,2,'0'),'@example.invalid') COLLATE utf8mb4_unicode_ci
 WHERE s.n<=20;
 
 -- Stable 1-3 item lines per order; prices read from existing demo product/variant DB.
@@ -163,13 +166,13 @@ SELECT CONCAT('BHDEMO',LPAD(s.n,4,'0')),
    ELSE 0 END DAY)
 FROM bh_demo_nums s
 JOIN bh_demo_customers u ON u.n=1+MOD(s.n*7,20)
-WHERE NOT EXISTS(SELECT 1 FROM tbl_orders o WHERE o.order_code=CONCAT('BHDEMO',LPAD(s.n,4,'0')));
+WHERE NOT EXISTS(SELECT 1 FROM tbl_orders o WHERE o.order_code COLLATE utf8mb4_unicode_ci = CONCAT('BHDEMO',LPAD(s.n,4,'0')) COLLATE utf8mb4_unicode_ci);
 
 -- On second import no order is considered fresh: no duplicated lines or stock.
 INSERT INTO bh_demo_fresh(n,order_id)
 SELECT s.n,o.id FROM bh_demo_nums s
 JOIN bh_demo_customers u ON u.n=1+MOD(s.n*7,20)
-JOIN tbl_orders o ON o.order_code=CONCAT('BHDEMO',LPAD(s.n,4,'0')) AND o.user_id=u.user_id
+JOIN tbl_orders o ON o.order_code COLLATE utf8mb4_unicode_ci = CONCAT('BHDEMO',LPAD(s.n,4,'0')) COLLATE utf8mb4_unicode_ci AND o.user_id=u.user_id
 WHERE NOT EXISTS(SELECT 1 FROM tbl_order_items i WHERE i.order_id=o.id);
 
 INSERT INTO tbl_order_items(order_id,product_id,product_name,variant_label,unit_price,quantity)
