@@ -1,5 +1,8 @@
 -- OPTIONAL: demo data for BanHang. Never automatically imported by banhang.sql.
--- Generates 16 demo products, 20 fake customers and 240 demo orders.
+-- Creates 240 example orders with 20 fake customers and 16 inactive fixture
+-- products assigned to the SAME 4 storefront categories. Rerunning the file
+-- also fixes previously imported standalone [DEMO] categories.
+-- Fixture products stay inactive to avoid duplicate live catalog items.
 -- Orders marked PAID are SIMULATED, not bank payments or real revenue.
 -- NEVER use in production. See database/README.md before import.
 SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -46,22 +49,22 @@ CREATE TEMPORARY TABLE bh_demo_catalog(
  demo_price INT,image_file VARCHAR(255)
 ) ENGINE=MEMORY;
 INSERT INTO bh_demo_catalog(n,sku,title,category,demo_price,image_file) VALUES
-(1,'BH-DEMO-P001','[DEMO] iPhone 15','[DEMO] Điện thoại',16990000,'ip15.jpg'),
-(2,'BH-DEMO-P002','[DEMO] iPhone 16','[DEMO] Điện thoại',20990000,'iphone-16 thuong.webp'),
-(3,'BH-DEMO-P003','[DEMO] Galaxy S24','[DEMO] Điện thoại',18990000,'samsung-galaxy-s24.jpg'),
-(4,'BH-DEMO-P004','[DEMO] Galaxy S25','[DEMO] Điện thoại',22990000,'samsung-galaxy-s25.jpg'),
-(5,'BH-DEMO-P005','[DEMO] OPPO Reno 14','[DEMO] Điện thoại',11990000,'oppo reno 14.webp'),
-(6,'BH-DEMO-P006','[DEMO] Galaxy Z Flip7','[DEMO] Điện thoại',25990000,'samsung_galaxy_z_flip7.webp'),
-(7,'BH-DEMO-P007','[DEMO] ASUS TUF Gaming A15','[DEMO] Laptop',21490000,'Asus TUF Gaming A15.jpg'),
-(8,'BH-DEMO-P008','[DEMO] ASUS Vivobook Go 15','[DEMO] Laptop',11990000,'asus vivobook go 15.jpg'),
-(9,'BH-DEMO-P009','[DEMO] Dell Inspiron 15 3530','[DEMO] Laptop',16490000,'Dell inspiron 15 3530 i5 1334U.jpg'),
-(10,'BH-DEMO-P010','[DEMO] Dell Latitude 3450','[DEMO] Laptop',19490000,'dell latitude 3450 i7 1355U.jpg'),
-(11,'BH-DEMO-P011','[DEMO] AirPods 4 ANC','[DEMO] Âm thanh',3990000,'airpods 4 ANC.webp'),
-(12,'BH-DEMO-P012','[DEMO] AirPods Pro 3','[DEMO] Âm thanh',6490000,'airpods-pro-3.webp'),
-(13,'BH-DEMO-P013','[DEMO] Củ sạc iPhone','[DEMO] Phụ kiện',390000,'củ sạc ip.webp'),
-(14,'BH-DEMO-P014','[DEMO] Ốp lưng Samsung','[DEMO] Phụ kiện',199000,'ốp lưng samsung.webp'),
-(15,'BH-DEMO-P015','[DEMO] Pin dự phòng Anker 335','[DEMO] Phụ kiện',990000,'sạc dự phòng anker 335.png'),
-(16,'BH-DEMO-P016','[DEMO] Giá đỡ điện thoại','[DEMO] Phụ kiện',189000,'giá đỡ đt.jpg');
+(1,'BH-DEMO-P001','[DEMO] iPhone 15','Điện thoại',16990000,'ip15.jpg'),
+(2,'BH-DEMO-P002','[DEMO] iPhone 16','Điện thoại',20990000,'iphone-16 thuong.webp'),
+(3,'BH-DEMO-P003','[DEMO] Galaxy S24','Điện thoại',18990000,'samsung-galaxy-s24.jpg'),
+(4,'BH-DEMO-P004','[DEMO] Galaxy S25','Điện thoại',22990000,'samsung-galaxy-s25.jpg'),
+(5,'BH-DEMO-P005','[DEMO] OPPO Reno 14','Điện thoại',11990000,'oppo reno 14.webp'),
+(6,'BH-DEMO-P006','[DEMO] Galaxy Z Flip7','Điện thoại',25990000,'samsung_galaxy_z_flip7.webp'),
+(7,'BH-DEMO-P007','[DEMO] ASUS TUF Gaming A15','Laptop',21490000,'Asus TUF Gaming A15.jpg'),
+(8,'BH-DEMO-P008','[DEMO] ASUS Vivobook Go 15','Laptop',11990000,'asus vivobook go 15.jpg'),
+(9,'BH-DEMO-P009','[DEMO] Dell Inspiron 15 3530','Laptop',16490000,'Dell inspiron 15 3530 i5 1334U.jpg'),
+(10,'BH-DEMO-P010','[DEMO] Dell Latitude 3450','Laptop',19490000,'dell latitude 3450 i7 1355U.jpg'),
+(11,'BH-DEMO-P011','[DEMO] AirPods 4 ANC','Tai nghe & Loa',3990000,'airpods 4 ANC.webp'),
+(12,'BH-DEMO-P012','[DEMO] AirPods Pro 3','Tai nghe & Loa',6490000,'airpods-pro-3.webp'),
+(13,'BH-DEMO-P013','[DEMO] Củ sạc iPhone','Phụ kiện điện tử',390000,'củ sạc ip.webp'),
+(14,'BH-DEMO-P014','[DEMO] Ốp lưng Samsung','Phụ kiện điện tử',199000,'ốp lưng samsung.webp'),
+(15,'BH-DEMO-P015','[DEMO] Pin dự phòng Anker 335','Phụ kiện điện tử',990000,'sạc dự phòng anker 335.png'),
+(16,'BH-DEMO-P016','[DEMO] Giá đỡ điện thoại','Phụ kiện điện tử',189000,'giá đỡ đt.jpg');
 CREATE TEMPORARY TABLE bh_demo_products(
  n INT PRIMARY KEY,product_id INT,product_name VARCHAR(250),base_price INT,is_phone TINYINT
 ) ENGINE=MEMORY;
@@ -81,15 +84,46 @@ INSERT INTO tbl_danhmuc(tendanhmuc,thutu)
 SELECT c.category,1000 FROM (SELECT DISTINCT category FROM bh_demo_catalog) c
 WHERE NOT EXISTS(SELECT 1 FROM tbl_danhmuc d WHERE d.tendanhmuc COLLATE utf8mb4_unicode_ci = c.category COLLATE utf8mb4_unicode_ci);
 
+-- Repair databases already seeded with four separate [DEMO] categories.
+-- Migrate ONLY fixture products by stable BH-DEMO-P SKU, never real products.
+-- Keep fixture product IDs and stock balances unchanged: existing demo orders and
+-- inventory reversal must continue referencing their original product IDs.
+UPDATE tbl_sanpham p
+JOIN tbl_danhmuc oldcat ON oldcat.id_danhmuc=p.id_danhmuc
+JOIN tbl_danhmuc canonical ON canonical.tendanhmuc COLLATE utf8mb4_unicode_ci =
+  CASE oldcat.tendanhmuc COLLATE utf8mb4_unicode_ci
+    WHEN '[DEMO] Điện thoại' THEN 'Điện thoại'
+    WHEN '[DEMO] Laptop' THEN 'Laptop'
+    WHEN '[DEMO] Âm thanh' THEN 'Tai nghe & Loa'
+    WHEN '[DEMO] Phụ kiện' THEN 'Phụ kiện điện tử'
+    ELSE '' END COLLATE utf8mb4_unicode_ci
+SET p.id_danhmuc=canonical.id_danhmuc, p.tinhtrang=0
+WHERE p.masp LIKE 'BH-DEMO-P%'
+  AND oldcat.tendanhmuc COLLATE utf8mb4_unicode_ci IN
+    ('[DEMO] Điện thoại','[DEMO] Laptop','[DEMO] Âm thanh','[DEMO] Phụ kiện');
+
+-- Fixture products never appear as duplicate purchasable items; admin and
+-- historical order rows remain intact, including stock ledger and unit prices.
+UPDATE tbl_sanpham SET tinhtrang=0 WHERE masp LIKE 'BH-DEMO-P%';
+
+-- Remove only now-empty legacy fixture categories; leave categories with any
+-- user-managed product untouched.
+DELETE d FROM tbl_danhmuc d
+WHERE d.tendanhmuc COLLATE utf8mb4_unicode_ci IN
+  ('[DEMO] Điện thoại','[DEMO] Laptop','[DEMO] Âm thanh','[DEMO] Phụ kiện')
+AND NOT EXISTS (
+  SELECT 1 FROM tbl_sanpham p WHERE p.id_danhmuc=d.id_danhmuc
+);
+
 INSERT INTO tbl_sanpham(tensanpham,masp,giasp,soluong,hinhanh,tomtat,noidung,tinhtrang,id_danhmuc)
 SELECT c.title,c.sku,c.demo_price,1000,c.image_file,
  '[DEMO] Giá minh họa, không phải giá bán thực tế.',
- '[DEMO] Chỉ để thử sản phẩm, đơn hàng, quản trị và biểu đồ.',1,d.id_danhmuc
+ '[DEMO] Sản phẩm fixture chỉ giữ để đối chiếu đơn hàng; không mở bán.',0,d.id_danhmuc
 FROM bh_demo_catalog c JOIN tbl_danhmuc d ON d.tendanhmuc COLLATE utf8mb4_unicode_ci = c.category COLLATE utf8mb4_unicode_ci
 WHERE NOT EXISTS(SELECT 1 FROM tbl_sanpham p WHERE p.masp COLLATE utf8mb4_unicode_ci = c.sku COLLATE utf8mb4_unicode_ci);
 
 INSERT INTO bh_demo_products(n,product_id,product_name,base_price,is_phone)
-SELECT c.n,p.id_sanpham,p.tensanpham,p.giasp,IF(c.category='[DEMO] Điện thoại',1,0)
+SELECT c.n,p.id_sanpham,p.tensanpham,p.giasp,IF(c.category='Điện thoại',1,0)
 FROM bh_demo_catalog c JOIN tbl_sanpham p ON p.masp COLLATE utf8mb4_unicode_ci = c.sku COLLATE utf8mb4_unicode_ci;
 
 INSERT INTO tbl_product_variants(product_id,variant_code,price,is_active)
