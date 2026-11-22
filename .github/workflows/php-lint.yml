@@ -99,9 +99,9 @@ jobs:
 
       - name: Simulate old demo category import before repairing seed
         run: |
-          mysql -h127.0.0.1 -uroot web_mysqli_test -e "INSERT INTO tbl_danhmuc (tendanhmuc,thutu) VALUES ('[DEMO] Điện thoại',1000);"
-          mysql -h127.0.0.1 -uroot web_mysqli_test -e "INSERT INTO tbl_sanpham(tensanpham,masp,giasp,soluong,hinhanh,tomtat,noidung,tinhtrang,id_danhmuc) SELECT '[DEMO] iPhone 15','BH-DEMO-P001',16990000,1000,'ip15.jpg','','',1,id_danhmuc FROM tbl_danhmuc WHERE tendanhmuc='[DEMO] Điện thoại';"
-          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_danhmuc WHERE tendanhmuc LIKE '[DEMO]%'")" = '1'
+          mysql -h127.0.0.1 -uroot web_mysqli_test -e "INSERT INTO tbl_danhmuc (tendanhmuc,thutu) VALUES ('[DEMO] Điện thoại',1000),('[DEMO] Laptop',1000),('[DEMO] Âm thanh',1000),('[DEMO] Phụ kiện',1000);"
+          mysql -h127.0.0.1 -uroot web_mysqli_test -e "INSERT INTO tbl_sanpham(tensanpham,masp,giasp,soluong,hinhanh,tomtat,noidung,tinhtrang,id_danhmuc) SELECT CONCAT('[DEMO] Legacy ',tendanhmuc),CASE tendanhmuc WHEN '[DEMO] Điện thoại' THEN 'BH-DEMO-P001' WHEN '[DEMO] Laptop' THEN 'BH-DEMO-P007' WHEN '[DEMO] Âm thanh' THEN 'BH-DEMO-P011' ELSE 'BH-DEMO-P013' END,16990000,1000,'ip15.jpg','','',1,id_danhmuc FROM tbl_danhmuc WHERE tendanhmuc LIKE '[DEMO]%';"
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_danhmuc WHERE tendanhmuc LIKE '[DEMO]%'")" = '4'
 
       - name: Seed optional demo orders and verify idempotency
         run: |
