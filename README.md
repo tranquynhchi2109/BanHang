@@ -316,7 +316,7 @@ flowchart TB
 
 ### 🧪 Bộ dữ liệu demo nhiều đơn hàng (tùy chọn)
 
-Muốn thử Admin với nhiều đơn? Dùng [database/seed_demo_orders.sql](database/seed_demo_orders.sql) để tạo **240 đơn hàng mẫu**, **480 dòng sản phẩm**, **20 khách giả**, **16 sản phẩm demo có ảnh** và dữ liệu hủy đơn/đối soát giả lập. Xem [hướng dẫn nạp database demo](database/README.md).
+Muốn thử Admin với nhiều đơn? Dùng [database/seed_demo_orders.sql](database/seed_demo_orders.sql) để tạo **240 đơn hàng giả lập**, **480 dòng chi tiết đơn**, **20 khách giả** và dữ liệu hủy/đối soát. Tất cả dùng **chung danh mục sản phẩm hiện có**; 16 sản phẩm fixture nội bộ được giữ ẩn để không nhân đôi hàng đang bán, đồng thời không làm hỏng lịch sử đơn đã nạp. Xem [hướng dẫn import và sửa danh mục [DEMO] cũ](database/README.md).
 
 > [!CAUTION]
 > Đây là **dữ liệu giả** có cả trạng thái PAID mô phỏng, **không phải doanh thu thật**. File seed **không được chạy tự động bởi banhang.sql**. Nên dùng database riêng web_mysqli_demo; trước khi chủ động nhập vào database local hiện có, phải backup và bật opt-in trong file seed.
