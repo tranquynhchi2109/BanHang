@@ -96,3 +96,21 @@ jobs:
           mysql -h127.0.0.1 -uroot web_mysqli_test -e "RENAME TABLE tbl_order_items TO v2_order_items, tbl_orders TO v2_orders, tbl_settings TO v2_settings, tbl_login_attempts TO v2_login_attempts;"
           mysql -h127.0.0.1 -uroot web_mysqli_test < banhang.sql
           test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_orders WHERE order_code='CI_PRESERVE'")" = '1'
+
+      - name: Seed optional demo orders and verify idempotency
+        run: |
+          mysql -h127.0.0.1 -uroot web_mysqli_test < database/seed_demo_orders.sql
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_orders WHERE order_code LIKE 'BHDEMO%'")" = '240'
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_order_items i JOIN tbl_orders o ON o.id=i.order_id WHERE o.order_code LIKE 'BHDEMO%'")" = '480'
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_dangky WHERE email LIKE 'banhang-demo-%@example.invalid'")" = '20'
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_sanpham WHERE masp LIKE 'BH-DEMO-P%'")" = '16'
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_order_cancel_requests c JOIN tbl_orders o ON o.id=c.order_id WHERE o.order_code LIKE 'BHDEMO%' AND c.status='PENDING'")" = '20'
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_orders WHERE order_code LIKE 'BHDEMO%' AND payment_status='PAID'")" = '80'
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_orders WHERE order_code LIKE 'BHDEMO%' AND order_status='CANCELLED'")" = '40'
+          stock_before="$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT SUM(soluong) FROM tbl_sanpham WHERE masp LIKE 'BH-DEMO-P%'")"
+          movement_before="$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_inventory_movements m JOIN tbl_orders o ON o.id=m.order_id WHERE o.order_code LIKE 'BHDEMO%'")"
+          mysql -h127.0.0.1 -uroot web_mysqli_test < database/seed_demo_orders.sql
+          test "$stock_before" = "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT SUM(soluong) FROM tbl_sanpham WHERE masp LIKE 'BH-DEMO-P%'")"
+          test "$movement_before" = "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_inventory_movements m JOIN tbl_orders o ON o.id=m.order_id WHERE o.order_code LIKE 'BHDEMO%'")"
+          test "$(mysql -h127.0.0.1 -uroot -N -s web_mysqli_test -e "SELECT COUNT(*) FROM tbl_orders WHERE order_code LIKE 'BHDEMO%'")" = '240'
+          echo "Demo seed is consistent and idempotent"
