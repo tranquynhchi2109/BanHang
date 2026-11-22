@@ -1,72 +1,73 @@
-# BanHang — Demo database seed (manual / optional)
+# BanHang — Dữ liệu mẫu cho đồ án môn học
 
-File: [seed_demo_orders.sql](seed_demo_orders.sql)
+File SQL: [seed_demo_orders.sql](seed_demo_orders.sql)
 
-This is **fake data for local development and admin UI testing**. It is NOT part of the schema migration and is **never imported by banhang.sql**.
+Đây là **dữ liệu để chạy thử website bán thiết bị công nghệ**, không phải dữ liệu từ khách mua hàng thực tế. File seed chạy **thủ công**, không được gọi bởi `banhang.sql`.
 
-## What it adds
+## Sau khi nạp
 
-| Fixture | Count |
+| Thành phần | Số lượng |
 | --- | ---: |
-| Demo categories | 4 |
-| Demo products with images already in the repo | 16 |
-| Fake customers with disabled-login passwords and .invalid email | 20 |
-| Demo orders BHDEMO0001...BHDEMO0240 | 240 |
-| Demo order items | 480 |
-| Pending cancellation review requests | 20 |
-| Declined cancellation requests | 20 |
+| Sản phẩm mẫu đang hiển thị để mua | **50** |
+| Danh mục sản phẩm | 5 danh mục chung: Điện thoại, Laptop, Tai nghe & Loa, Phụ kiện điện tử, Đồng hồ |
+| Khách hàng mẫu (không đăng nhập được) | 20 |
+| Đơn hàng mẫu, mã `BHDEMO0001` đến `BHDEMO0240` | 240 |
+| Chi tiết sản phẩm trong đơn | 480 |
+| Yêu cầu hủy đang chờ | 20 |
+| Yêu cầu hủy đã từ chối | 20 |
 
-The orders span PENDING / CONFIRMED / PREPARING / SHIPPING / COMPLETED / CANCELLED. The seed also populates stock deduction ledger entries for noncancelled new orders, public status timelines, payment audit examples and in-app notifications. Some orders are marked PAID **for chart testing only**; no bank transfer actually occurred. There are NO bank snapshots, real bank account numbers, actual shipment references or outgoing emails.
+Các tên máy như **iPhone 15/16/17, Samsung Galaxy, OPPO, ASUS, Dell, AirPods**, phụ kiện và đồng hồ có **ảnh thực sự có sẵn trong thư mục `images/`**. Tên trên frontend bình thường, **không có tiền tố [DEMO]**. Giá/tồn kho chỉ mang tính chất minh họa cho bài học và có thể sửa trong Admin.
 
-## Recommended: separate local demo database
+Mọi sản phẩm dùng chung bảng `tbl_sanpham` và các danh mục thật trong `tbl_danhmuc`. Không có bảng hàng riêng; các sản phẩm trước đó mang SKU `BH-DEMO-P001`–`P016` được chuyển thành `BH-TECH-P001`–`P016` ngay trên **chính ID cũ** để giữ lịch sử đơn hàng và tồn kho. Import lại không tạo sản phẩm/đơn trùng, không trừ kho lần hai.
 
-1. Start XAMPP Apache and MySQL. Create **web_mysqli_demo** in phpMyAdmin with utf8mb4.
-2. Import **banhang.sql** into **web_mysqli_demo** for the current schema.
-3. Import **database/seed_demo_orders.sql** into **web_mysqli_demo**.
-4. Set **DB_NAME** to **web_mysqli_demo** in the local **admin/config/config.local.php** (already git-ignored) so Admin displays these demo orders.
+## Chạy trên database XAMPP đang sử dụng: web_mysqli
 
-CLI alternative after creating that database:
+1. Trong phpMyAdmin, **Export/backup database `web_mysqli`** để giữ dữ liệu hiện tại.
+2. Cập nhật source từ GitHub: `git pull origin main`.
+3. Mở **database/seed_demo_orders.sql** trong VS Code. Vì đây là database local mày chủ động dùng cho bài tập, đổi:
 
-~~~bash
-mysql -u root -p -D web_mysqli_demo < banhang.sql
-mysql -u root -p -D web_mysqli_demo < database/seed_demo_orders.sql
+   ~~~sql
+   SET @bh_demo_allow_existing_database = 0;
+   ~~~
+
+   thành:
+
+   ~~~sql
+   SET @bh_demo_allow_existing_database = 1;
+   ~~~
+
+4. Chọn tên **database `web_mysqli`** trong phpMyAdmin (không chọn một bảng như tbl_sanpham), rồi Import file SQL vừa sửa.
+5. Refresh website. Vào `index.php?page=products` sẽ thấy các sản phẩm mới được bật (`tinhtrang=1`). Admin cũng hiển thị chúng trong cùng hệ thống sản phẩm.
+
+Nếu database đã có 6 sản phẩm trước đó, sau import dự kiến có khoảng **56 sản phẩm đang mở bán** (tùy dữ liệu đã sửa/xóa). Mã `BHDEMO...` vẫn được giữ cho 240 đơn mẫu để tránh nhầm với giao dịch ngân hàng thật.
+
+### Kiểm tra ngay trong phpMyAdmin
+
+~~~sql
+SELECT COUNT(*) AS so_san_pham_mau_dang_ban
+FROM tbl_sanpham WHERE masp LIKE 'BH-TECH-P%' AND tinhtrang=1;
+
+SELECT COUNT(*) AS so_don_hang_mau
+FROM tbl_orders WHERE order_code LIKE 'BHDEMO%';
+
+SELECT tendanhmuc FROM tbl_danhmuc
+WHERE tendanhmuc LIKE '[DEMO]%';
 ~~~
 
-## Intentionally import into local web_mysqli instead?
+Kết quả lần lượt mong đợi là **50**, **240**, **0 dòng**. Nếu import lại, các con số này không tăng.
 
-> [!CAUTION]
-> **Export a full database backup first.** The new demo orders include simulated PAID amounts, which will affect Admin reports. NEVER do this on a production database. To import into an existing disposable/local web_mysqli, open **database/seed_demo_orders.sql**, change **SET @bh_demo_allow_existing_database = 0** to **1**, then manually import that edited file. The default blocks this action.
+## Lưu ý về dữ liệu giả lập
 
-Never import into production. Do not edit the database name inside the SQL; select the destination database first.
+- Một số đơn hàng được đánh dấu **PAID** chỉ để kiểm thử báo cáo doanh thu và đối soát. Không có chuyển khoản thật. **Không nạp file seed này lên cửa hàng đang kinh doanh thật**.
+- Những khách hàng có email `example.invalid` không đăng nhập được, không gửi email ra ngoài.
+- SQL không đổi tài khoản MB Bank của bạn, không tự tạo webhook, không gửi email, không xóa đơn người dùng.
+- Giá và số lượng mẫu có thể chỉnh từ Admin sau khi nạp; reimport sẽ không ghi đè giá hoặc tồn kho sản phẩm đã có.
+- Sản phẩm đã được tham chiếu trong lịch sử đơn không bị xóa; việc cập nhật diễn ra ngay tại ID cũ.
 
-## Idempotency and limitations
+### Lỗi thường gặp
 
-- Stable BHDEMO order codes, BH-DEMO-P SKUs and example.invalid fixture emails prevent duplicates. Reimporting **does not duplicate existing demo orders, stock deductions, items, notifications, or requests**.
-- Existing demo records are not overwritten by a reimport, including manually changed prices/statuses; real users/products/orders are untouched.
-- Requires MySQL 8.0 or MariaDB 10.11, InnoDB, and an up-to-date banhang.sql schema.
-- Order dates are distributed over the previous four months based on the initial import date and are retained on reimport.
-- Fake customers cannot log in. There are no public demo account credentials.
-- Cancelling a demo order from Admin uses the normal product inventory workflow. Demo orders must never be treated as real customer commitments.
-- For a clean demo, rebuild **only** the disposable web_mysqli_demo database from scratch, NEVER web_mysqli.
+**#1146: BANHANG_DEMO_SEED_BLOCKED...**: Chưa bật opt-in cho `web_mysqli`; thay 0 thành 1 trong file SQL trước khi import.
 
+**#1267: Illegal mix of collations**: Lấy bản seed mới nhất; SQL đã chỉ định COLLATE khi so sánh dữ liệu từ schema MySQL cũ, không phải tự sửa collation của toàn database.
 
-## Lỗi #1267 khi import vào database XAMPP cũ
-
-Nếu gặp **Illegal mix of collations (utf8mb4_unicode_ci và utf8mb4_general_ci)**, hãy lấy **bản seed_demo_orders.sql mới nhất** và import lại. Bản cập nhật dùng COLLATE tường minh khi so sánh tên danh mục, mã sản phẩm, email khách và mã đơn trong dữ liệu giả lập.
-
-**Không** dùng ALTER TABLE hoặc CONVERT TO CHARACTER SET để chuyển đổi hàng loạt dữ liệu khách hàng. **Không** xóa database. Sau khi đã sao lưu, giữ nguyên opt-in nếu đang cố ý dùng database local và import lại file mới. File seed đã có bảo vệ chống sinh đơn trùng.
-
-
-## Danh mục chung, không tách [DEMO]
-
-Từ bản seed mới nhất, 16 sản phẩm **fixture nội bộ** được gắn vào **chính** các danh mục ban đầu: **Điện thoại, Laptop, Tai nghe & Loa, Phụ kiện điện tử**. Không còn tạo danh mục [DEMO] mới. Fixture sản phẩm được **tắt bán** (tinhtrang=0) để không nhân đôi iPhone, Galaxy hay laptop trên gian hàng, nhưng vẫn giữ ID và tồn kho cho 240 đơn hàng thử nghiệm/hủy đơn an toàn.
-
-**Nếu đã import bản cũ và trang chủ hiện danh mục [DEMO]:**
-
-1. Backup database web_mysqli.
-2. git pull origin main để có bản seed mới.
-3. Nếu chủ động import vào database local web_mysqli, giữ opt-in @bh_demo_allow_existing_database=1; nếu dùng web_mysqli_demo, giữ mặc định 0.
-4. Import lại **database/seed_demo_orders.sql**. Script tự chuyển **chỉ** các sản phẩm có SKU BH-DEMO-P% về danh mục chung, ẩn chúng khỏi storefront và xóa các danh mục cũ **nếu trống**. Đơn đã tồn tại không bị thêm lại, không bị trừ kho lần hai.
-5. Tải lại trang chủ và kiểm tra danh mục.
-
-Không xóa tay tbl_sanpham hoặc tbl_orders. Các sản phẩm fixture còn nằm trong Admin ở trạng thái ẩn nhằm giữ tham chiếu đơn hàng lịch sử; đơn BHDEMO và dữ liệu thanh toán giả lập vẫn được giữ để kiểm thử, **không phải doanh thu thật**.
+**Sản phẩm vẫn chỉ có 6 món**: Đã kéo code nhưng chưa **reimport file SQL mới**; hoặc đang chọn nhầm database. Kiểm tra bằng các câu SQL trên, rồi hard refresh (`Ctrl+F5`).
